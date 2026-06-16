@@ -1,0 +1,15 @@
+{
+  "github.copilot.chat.terminalAutoApprove.commands": [
+    "make report-2w",
+    "make report-monthly",
+    "make report-last-month",
+    "make collect-2w",
+    "make collect-monthly",
+    "make collect-last-month",
+    "make analyze-2w",
+    "make analyze-monthly",
+    "make analyze-last-month",
+    "make clean",
+    "make install"
+  ]
+}
