@@ -166,7 +166,6 @@ Include: summary stats, red flags (if any — if empty, don't mention), time_in_
 | `missing_components`  | Area for improvement — traceability          |
 | `missing_implementer` | Area for improvement — responsibility        |
 | `no_pr_linked`        | Red flag — no evidence of PR                 |
-| `no_pr_comment`       | Area for improvement — traceability          |
 | `missing_ac`          | Area for improvement — scope clarity         |
 | `missing_description` | Area for improvement — comprehension         |
 
@@ -190,7 +189,7 @@ Investigate cause before flagging:
 #### Created Tickets Analysis
 
 - Evaluate initiative: what was identified, definition quality, complete cycles
-- AC quality: if most use "AC" abbreviation instead of "Acceptance Criteria" → flag. Occasional = don't flag. Bug tickets exempt.
+- AC quality: if most use just abbreviations ("AC", "Criteria", "Acceptance") instead of the full "Acceptance Criteria" phrase → flag. Occasional = don't flag. Bug tickets exempt.
 
 ---
 
