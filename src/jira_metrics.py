@@ -24,7 +24,7 @@ STUCK_IN_PROGRESS_HOURS = 72
 # ---------------------------------------------------------------------------
 
 _PR_URL_RE = re.compile(r"https://github\.com/([\w.\-]+)/([\w.\-]+)/pull/(\d+)")
-_AC_RE      = re.compile(r"acceptance criteria|\bac\b", re.IGNORECASE)
+_AC_RE      = re.compile(r"acceptance criteria|\bacceptance\b|\bcriteria\b|\bac\b", re.IGNORECASE)
 _AC_FULL_RE = re.compile(r"acceptance criteria", re.IGNORECASE)
 
 _REVIEW_KEYWORDS = ("review", "qa", "testing", "test", "staging", "validation")
@@ -527,13 +527,7 @@ def _evaluate_red_flags(
     status_lower = ticket.status.lower()
     closed_without_code = any(k in status_lower for k in _CLOSED_WITHOUT_CODE_KEYWORDS)
     if pr_expected and not ticket.pr_links and not closed_without_code and not likely_reviewer:
-        if ticket.pr_linked_via_automation:
-            flags.append(JiraRedFlag(
-                ticket_key=ticket.key,
-                kind="no_pr_comment",
-                detail=f"PR linked via automation but no manual comment (status: {ticket.status})",
-            ))
-        else:
+        if not ticket.pr_linked_via_automation:
             flags.append(JiraRedFlag(
                 ticket_key=ticket.key,
                 kind="no_pr_linked",
