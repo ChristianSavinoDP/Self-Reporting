@@ -156,22 +156,50 @@ def cmd_collect(args) -> None:
     log(f"Period: {label}")
     log(f"Output: {output_dir}/")
 
+    # status_notes surfaces data-source problems at the TOP of the report
+    # instead of failing silently in the logs.
+    status_notes: list[str] = []
+
     try:
         user = collect_metrics(config)
     except ValueError as e:
         log(f"\nConfiguration error: {e}")
+        sys.exit(1)
+    except Exception as e:
+        log(f"\nGitHub collection failed: {e}")
+        log("Cannot continue without GitHub data.")
         sys.exit(1)
 
     # Collect Jira metrics
     log("\n" + "=" * 40)
     log("Jira Enrichment")
     log("=" * 40)
+    jira_configured = all([
+        os.environ.get("JIRA_URL", ""),
+        os.environ.get("JIRA_EMAIL", ""),
+        os.environ.get("JIRA_TOKEN", ""),
+        os.environ.get("JIRA_PROJECT_KEY", ""),
+    ])
     try:
         jira_data = collect_jira_metrics(config, user)
     except Exception as e:
         log(f"Warning: Jira collection failed: {e}")
         log("Continuing without Jira data...")
         jira_data = None
+        status_notes.append(f"**Jira data unavailable** — collection failed: {e}")
+    else:
+        if jira_data is None:
+            if jira_configured:
+                status_notes.append(
+                    "**Jira data unavailable** — Jira is configured but returned no data "
+                    "(check JIRA_PROJECT_KEY, JIRA_EMAIL, and account permissions)."
+                )
+            else:
+                status_notes.append(
+                    "**Jira data not included** — Jira is not configured. Set "
+                    "`JIRA_URL`, `JIRA_EMAIL`, `JIRA_TOKEN` (or `JIRA_API_TOKEN`), and "
+                    "`JIRA_PROJECT_KEY` in `.env` to include Jira metrics."
+                )
 
     # Save raw data
     data = to_json(user)
@@ -187,7 +215,8 @@ def cmd_collect(args) -> None:
     render_report(user, config, output_dir,
                   filename=f"metrics-{stem}.md",
                   period_label=label,
-                  jira_data=jira_data)
+                  jira_data=jira_data,
+                  status_notes=status_notes)
     log("\nData collection complete!")
 
 
