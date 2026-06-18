@@ -30,41 +30,14 @@ import anthropic
 
 _USE_BEDROCK = os.environ.get("CLAUDE_CODE_USE_BEDROCK", "").lower() == "true"
 
-
-def _claude_code_model() -> str | None:
-    """Read the model the user has selected in Claude Code.
-
-    Claude Code does not export the active model to subprocesses, but it
-    persists the selection in its settings.json files. Project settings take
-    precedence over user settings (matching Claude Code's own resolution).
-    """
-    candidates = [
-        ROOT / ".claude" / "settings.local.json",
-        ROOT / ".claude" / "settings.json",
-        Path.home() / ".claude" / "settings.json",
-    ]
-    for path in candidates:
-        try:
-            model = json.loads(path.read_text()).get("model")
-        except (OSError, ValueError):
-            continue
-        if model:
-            # Claude Code appends a context-variant marker (e.g. "[1m]") that
-            # is not part of the Bedrock/Anthropic model ID — strip it.
-            return model.split("[", 1)[0].strip()
-    return None
-
-
-# Model resolution order:
-#   1. REPORT_MODEL / ANTHROPIC_MODEL env override
-#   2. (Bedrock only) the model selected in Claude Code's settings.json
-#   3. hard-coded fallback
-_FALLBACK_MODEL = "us.anthropic.claude-opus-4-8" if _USE_BEDROCK else "claude-opus-4-7"
+# Always analyze with Opus: the data analysis needs the most capable model,
+# regardless of which model is selected in Claude Code. REPORT_MODEL /
+# ANTHROPIC_MODEL remain as explicit escape hatches.
+_DEFAULT_MODEL = "us.anthropic.claude-opus-4-8" if _USE_BEDROCK else "claude-opus-4-8"
 MODEL = (
     os.environ.get("REPORT_MODEL")
     or os.environ.get("ANTHROPIC_MODEL")
-    or (_claude_code_model() if _USE_BEDROCK else None)
-    or _FALLBACK_MODEL
+    or _DEFAULT_MODEL
 )
 
 
@@ -144,8 +117,14 @@ def _fix_markdown(text: str) -> str:
 
 
 def _insert_analysis(report: str, analysis: str) -> str:
-    """Append analysis block at the end of the report."""
-    return report.rstrip() + "\n\n" + _fix_markdown(analysis).strip() + "\n"
+    """Insert the analysis before the credits footer so credits stay last."""
+    from src.renderer import CREDITS_ANCHOR, credits_block
+
+    body = report.partition(CREDITS_ANCHOR)[0].rstrip()
+    if body.endswith("---"):  # drop the separator that opens the credits block
+        body = body[: -len("---")].rstrip()
+    analysis_block = _fix_markdown(analysis).strip()
+    return body + "\n\n" + analysis_block + "\n\n" + credits_block() + "\n"
 
 
 def _extract_metrics_section(report: str) -> str:
@@ -308,7 +287,7 @@ def _analyze_single(
                        max_tokens=max_tokens, budget_tokens=budget_tokens,
                        label=f"@{login}")
     if len(analysis) < 100:
-        log(f"  @{login}: failed response ({len(analysis)} chars) — retrying...")
+        log(f"  @{login}: failed response ({len(analysis)} chars): retrying...")
         analysis = _stream(client, system, messages=[msg],
                            max_tokens=max_tokens + 10000, budget_tokens=budget_tokens + 6000,
                            label=f"@{login} (retry)")
@@ -329,7 +308,7 @@ def _analyze_multipart(
 
         sections_for_part = _sections_for_label(part_label)
         msg = {"role": "user", "content": (
-            f"PARTIAL data for @{login} for the period `{fp}` — part: {part_label}.\n\n"
+            f"PARTIAL data for @{login} for the period `{fp}`: part: {part_label}.\n\n"
             f"```json\n{part_json}\n```\n\n"
             f"Script-generated report section (reference tables):\n\n"
             f"```markdown\n{metrics_section}\n```\n\n"
@@ -342,13 +321,13 @@ def _analyze_multipart(
                                 max_tokens=max_tokens, budget_tokens=budget_tokens,
                                 label=f"@{login} [{part_label}]")
         if len(part_analysis) < 50:
-            log(f"  @{login} [{part_label}]: failed response — retrying...")
+            log(f"  @{login} [{part_label}]: failed response: retrying...")
             part_analysis = _stream(client, system, messages=[msg],
                                     max_tokens=max_tokens + 10000,
                                     budget_tokens=budget_tokens + 6000,
                                     label=f"@{login} [{part_label}] (retry)")
         if len(part_analysis) < 50:
-            log(f"  @{login} [{part_label}]: Error — part failed")
+            log(f"  @{login} [{part_label}]: Error: part failed")
             return ""
         partial_analyses.append(part_analysis)
 
@@ -367,7 +346,7 @@ def _analyze_multipart(
                        max_tokens=max_tokens, budget_tokens=budget_tokens,
                        label=f"@{login} [consolidation]")
     if len(analysis) < 100:
-        log(f"  @{login} [consolidation]: failed response — retrying...")
+        log(f"  @{login} [consolidation]: failed response: retrying...")
         analysis = _stream(client, system, messages=[consolidation_msg],
                            max_tokens=max_tokens + 10000, budget_tokens=budget_tokens + 6000,
                            label=f"@{login} [consolidation] (retry)")
@@ -393,7 +372,7 @@ def run(period: str, output: str = "output", language: str = "en") -> None:
 
     for p in (data_path, report_src):
         if not p.exists():
-            log(f"Error: {p} not found — run 'python main.py report' first.")
+            log(f"Error: {p} not found: run 'python main.py report' first.")
             sys.exit(1)
 
     log(f"Sources : {data_dir}/")
@@ -460,7 +439,7 @@ def run(period: str, output: str = "output", language: str = "en") -> None:
         "cache_control": {"type": "ephemeral"},
     }]
 
-    log(f"\n{'—' * 40}")
+    log(f"\n{'-' * 40}")
     log(f"@{login}: starting analysis...")
 
     user_json_str = json.dumps(data_json, indent=2, ensure_ascii=False)
@@ -474,14 +453,14 @@ def run(period: str, output: str = "output", language: str = "en") -> None:
             user_max_tokens, user_budget_tokens,
         )
     else:
-        log(f"  Input total: {len(user_json_str)} chars JSON — splitting into {len(parts)} parts")
+        log(f"  Input total: {len(user_json_str)} chars JSON: splitting into {len(parts)} parts")
         analysis = _analyze_multipart(
             client, system, login, period, parts, metrics_section,
             user_max_tokens, user_budget_tokens,
         )
 
     if len(analysis) < 100:
-        log(f"  @{login}: Error — analysis failed ({len(analysis)} chars)")
+        log(f"  @{login}: Error: analysis failed ({len(analysis)} chars)")
         log("  Re-run with: python main.py analyze --period " + period)
         sys.exit(1)
 

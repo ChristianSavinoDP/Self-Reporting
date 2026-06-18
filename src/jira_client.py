@@ -1,4 +1,4 @@
-"""Jira Cloud REST API v3 client — Basic auth, rate limit handling."""
+"""Jira Cloud REST API v3 client: Basic auth, rate limit handling."""
 from __future__ import annotations
 
 import time
@@ -112,7 +112,7 @@ class JiraClient:
             resp = self._session.request(method, url, **kwargs)
             if resp.status_code == 429:
                 wait = int(resp.headers.get("Retry-After", 10)) + 1
-                self._log(f"  Jira rate limit — waiting {wait}s...")
+                self._log(f"  Jira rate limit: waiting {wait}s...")
                 time.sleep(wait)
                 continue
             resp.raise_for_status()

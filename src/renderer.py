@@ -7,10 +7,14 @@ from pathlib import Path
 from typing import Optional, TYPE_CHECKING
 
 from .metrics import UserData
-from .utils import log
+from .utils import log, is_multi_month
 
 if TYPE_CHECKING:
     from .jira_metrics import JiraUserData
+
+# Tool authors, in order of contribution. The first is the primary author.
+REPORT_AUTHOR = "ChristianSavinoDP"
+REPORT_COLLABORATORS = ["ffernandez-dailypay", "logan-dp"]
 
 
 def render_report(
@@ -31,7 +35,7 @@ def render_report(
 
 def _fmt_hours(h: Optional[float]) -> str:
     if h is None:
-        return "—"
+        return "-"
     return f"{h:.1f}h" if h < 24 else f"{h / 24:.1f}d"
 
 
@@ -41,6 +45,44 @@ def _pct(v: float) -> str:
 
 def _truncate(s: str, n: int = 50) -> str:
     return s[:n] + "..." if len(s) > n else s
+
+
+_MONTH_ABBR = {
+    "01": "Jan", "02": "Feb", "03": "Mar", "04": "Apr", "05": "May", "06": "Jun",
+    "07": "Jul", "08": "Aug", "09": "Sep", "10": "Oct", "11": "Nov", "12": "Dec",
+}
+
+
+def _month_label(ym: str) -> str:
+    """'2026-03' -> \"Mar '26\"."""
+    try:
+        year, month = ym.split("-")
+        return f"{_MONTH_ABBR.get(month, month)} '{year[2:]}"
+    except ValueError:
+        return ym
+
+
+def _monthly_resolution_chart(monthly: dict[str, int], login: str) -> list[str]:
+    """Mermaid bar chart of resolved tickets per month (long periods only)."""
+    if len(monthly) < 2:
+        return []
+    months = sorted(monthly.keys())
+    labels = ", ".join(f'"{_month_label(m)}"' for m in months)
+    values = ", ".join(str(monthly[m]) for m in months)
+    max_val = max(monthly.values())
+    return [
+        "",
+        "### Monthly Progress: Tickets Resolved",
+        "",
+        "```mermaid",
+        "xychart-beta",
+        f'    title "Tickets resolved per month: @{login}"',
+        f"    x-axis [{labels}]",
+        f'    y-axis "Tickets" 0 --> {max_val + 1}',
+        f"    bar [{values}]",
+        "```",
+        "",
+    ]
 
 
 def _markdown(
@@ -60,13 +102,18 @@ def _markdown(
     if jira_data and jira_data.jira_display_name:
         display_name = jira_data.jira_display_name
 
-    title = f"# Self-Report — {display_name}" if display_name else f"# Self-Report — @{user.login}"
+    subject = display_name if display_name else f"@{user.login}"
+    title = f"# Self-Report: {subject}"
 
     lines = [
         title,
         "",
         f"**Org / Repos:** {repos}  ",
-        f"**Period:** {period_label or dr.get('start', '—') + ' to today'}  ",
+        f"**Period:** {period_label or dr.get('start', '-') + ' to today'}  ",
+    ]
+    if jira_data and jira_data.reports_to:
+        lines.append(f"**Reports to:** {jira_data.reports_to}  ")
+    lines += [
         f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M')}",
         "",
     ]
@@ -126,10 +173,21 @@ def _markdown(
         ]
 
     if jira_data:
-        lines += _render_jira_section(jira_data)
+        multi_month = is_multi_month(dr.get("start"), dr.get("end"))
+        lines += _render_jira_section(jira_data, multi_month)
 
-    lines.append("")
-    return "\n".join(lines)
+    return "\n".join(lines).rstrip() + "\n\n" + credits_block() + "\n"
+
+
+# Unique opening of the credits footer. The analysis step anchors on this to
+# strip and re-append the footer, keeping credits last in the final document.
+CREDITS_ANCHOR = "**Report made by**"
+
+
+def credits_block() -> str:
+    """Attribution footer: all authors on one line, primary author first."""
+    names = ", ".join(f"@{n}" for n in [REPORT_AUTHOR, *REPORT_COLLABORATORS])
+    return f"---\n\n{CREDITS_ANCHOR} {names}\n"
 
 
 _SIGNIFICANT_FLAG_KINDS = frozenset({"stuck_in_progress", "blocked", "no_pr_linked", "no_pr_comment"})
@@ -161,10 +219,10 @@ def _fmt_state_journey(time_in_status: dict[str, float]) -> str:
             parts.append(f"{state}: {hours:.1f}h")
         else:
             parts.append(f"{state}: {hours / 24:.1f}d")
-    return " > ".join(parts) if parts else "—"
+    return " > ".join(parts) if parts else "-"
 
 
-def _render_jira_section(jd: "JiraUserData") -> list[str]:
+def _render_jira_section(jd: "JiraUserData", multi_month: bool = False) -> list[str]:
     lines = [
         "",
         "## Jira Tickets",
@@ -214,7 +272,7 @@ def _render_jira_section(jd: "JiraUserData") -> list[str]:
         for key, flags in by_ticket.items():
             kinds = ", ".join(_KIND_LABELS.get(rf.kind, rf.kind) for rf in flags)
             significant = [rf for rf in flags if rf.kind in _SIGNIFICANT_FLAG_KINDS]
-            detail = " / ".join(rf.detail for rf in significant) if significant else "—"
+            detail = " / ".join(rf.detail for rf in significant) if significant else "-"
             lines.append(f"| {key} | {kinds} | {detail} |")
 
     if jd.total_created > 0:
@@ -230,7 +288,7 @@ def _render_jira_section(jd: "JiraUserData") -> list[str]:
             "| --- | ------- | ---- | ---------- | -- | ----------- |",
         ]
         for t in jd.created_tickets:
-            comp_str = ", ".join(t.components) if t.components else "—"
+            comp_str = ", ".join(t.components) if t.components else "-"
             if not t.has_ac:
                 ac_str = "No"
             elif t.ac_uses_full_phrase:
@@ -239,7 +297,10 @@ def _render_jira_section(jd: "JiraUserData") -> list[str]:
                 ac_str = "Abbreviated"
             desc_str = "Yes" if t.has_description else "No"
             lines.append(
-                f"| {t.key} | {_truncate(t.summary)} | {t.issue_type or '—'} | {comp_str} | {ac_str} | {desc_str} |"
+                f"| {t.key} | {_truncate(t.summary)} | {t.issue_type or '-'} | {comp_str} | {ac_str} | {desc_str} |"
             )
+
+    if multi_month and jd.monthly_resolved:
+        lines += _monthly_resolution_chart(jd.monthly_resolved, jd.jira_display_name or "user")
 
     return lines

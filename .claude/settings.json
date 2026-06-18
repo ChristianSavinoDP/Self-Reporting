@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(env)",
+      "Bash(.venv/bin/python3 -c \"import anthropic; anthropic.AnthropicBedrock\\(\\)\")",
+      "Bash(.venv/bin/python3 -c ' *)",
+      "Bash(.venv/bin/python3 -c \"import botocore; print\\('botocore ok'\\)\")",
+      "Bash(.venv/bin/pip show *)",
+      "Bash(make report-*)",
+      "Bash(make collect-*)",
+      "Bash(make analyze-*)",
+      "Bash(make html-*)",
+      "Bash(make install)",
+      "Bash(make install *)",
+      "Bash(make clean)",
+      "Bash(make uninstall)"
+    ]
+  }
+}

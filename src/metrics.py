@@ -355,12 +355,18 @@ def _process_prs(
             continue
         owner, repo = parsed
         pr_num = item["number"]
-        pr_map.setdefault((owner, repo), []).append(pr_num)
 
-        s.opened += 1
         pr_meta = item.get("pull_request") or {}
         merged_at = _dt(pr_meta.get("merged_at"))
         state = item.get("state", "open")
+
+        # A PR closed while still a draft was never a real submission: skip it
+        # entirely so it counts toward neither opened nor closed_unmerged.
+        if state == "closed" and not merged_at and item.get("draft", False):
+            continue
+
+        pr_map.setdefault((owner, repo), []).append(pr_num)
+        s.opened += 1
 
         if merged_at:
             s.merged += 1
@@ -440,7 +446,7 @@ def _review_threads(
 
             first_author = (comments[0].get("author") or {}).get("login", "")
             if first_author == login:
-                # Self-started thread — collect as proactive communication
+                # Self-started thread: collect as proactive communication
                 replies = [c for c in comments[1:] if (c.get("author") or {}).get("login") != login]
                 user.self_threads.append(SelfThread(
                     pr_number=pr_num,

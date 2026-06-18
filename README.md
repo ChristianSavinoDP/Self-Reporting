@@ -1,55 +1,56 @@
 # Self-Reporting
 
-Performance self-assessment tool for developers. Collects your GitHub and Jira activity, generates metrics, and produces an AI-powered narrative analysis of your work patterns.
+Generate an honest self-assessment of your own engineering work. It pulls your GitHub and Jira activity for a period, builds the metrics, and has Claude write the narrative analysis (PR quality, how you handle review feedback, your reviewing, code-quality patterns, Jira hygiene).
 
-## Quick Start
+It runs on one person: you. The GitHub user is detected from your token, and Jira is queried by you as assignee and reporter.
 
-```bash
-# 1. Install dependencies
-make install
+## Requirements
 
-# 2. Configure credentials
-cp .env.example .env
-# Edit .env with your tokens and settings
+Run this from [Claude Code](https://www.anthropic.com/claude-code). It authenticates the AI analysis for you and runs it on Opus, so there is no API key to manage and running it elsewhere is not supported.
 
-# 3. Generate your self-report
-make report-2w           # Last 2 weeks
-make report-monthly      # Current month
-make report-last-month   # Last complete month
-```
+You also need Python 3.11+, a GitHub token (scope `repo`), and optionally a Jira API token.
 
-## Language
-
-Reports are in English by default. Override per-run:
+## Setup
 
 ```bash
-make report-2w LANG=es        # Latin American Spanish
-make report-monthly LANG=en   # English
+make install                 # create the venv and install dependencies
+cp .env.example .env         # then fill in your tokens (see Configuration)
 ```
 
-## Retry on Failure
+## Usage
 
-If the AI analysis fails but data collection succeeded, re-run only the analysis:
+Each `report-*` command runs the full pipeline (collect, analyze, render) and writes both a Markdown report and a styled HTML view.
 
 ```bash
-make analyze-2w          # Re-analyze last 2 weeks
-make analyze-monthly     # Re-analyze current month
-make analyze-last-month  # Re-analyze last month
+make report-2w               # last 2 weeks
+make report-monthly          # current month
+make report-last-month       # last full month
+make report-yearly           # year to date
+make report-historic         # all time
+make report-custom START=2026-01-01 END=2026-03-31
 ```
 
-## Data Collection Only
-
-To collect data without running AI analysis:
+By default the report is in English. Add `REPORT_LANG=es` for Latin American Spanish:
 
 ```bash
-make collect-2w
-make collect-monthly
-make collect-last-month
+make report-2w REPORT_LANG=es
 ```
+
+## Recovery commands
+
+Collection and analysis are split, so a failed analysis never forces you to re-pull the data. Each verb takes the same periods as `report-*` (`-2w`, `-monthly`, `-last-month`, `-yearly`, `-historic`, `-custom`).
+
+```bash
+make collect-2w              # pull GitHub + Jira data only, no analysis
+make analyze-2w              # re-run the analysis on already-collected data
+make html-2w                 # re-render the existing report to HTML
+```
+
+If an analysis fails, fix the cause and re-run `make analyze-<period>`; the collected data is reused.
 
 ## Configuration
 
-All configuration lives in `.env`:
+Everything lives in `.env`:
 
 ```text
 GITHUB_TOKEN=ghp_xxx
@@ -57,25 +58,31 @@ GITHUB_ORG=your-org
 JIRA_URL=https://company.atlassian.net
 JIRA_EMAIL=you@company.com
 JIRA_TOKEN=your_jira_api_token
-JIRA_PROJECT_KEY=PROJ
-ANTHROPIC_API_KEY=sk-ant-xxx
+JIRA_PROJECT_KEY=           # optional; empty queries every project you touch
 ```
 
-Your GitHub username is detected automatically from the token. No need to configure it manually.
+Notes:
+
+- No Anthropic API key. Claude Code handles that.
+- Jira is queried by person, not by project. Leave `JIRA_PROJECT_KEY` empty to span every project where you have tickets, or set it to scope to one.
+- "Reports to" is detected automatically from the lead of your most active Jira project.
 
 ## Output
 
-Reports use the naming pattern `self-report-<period>-<date>.md` and overwrite if regenerated on the same day.
+Files land in `output/`, named `self-report-<period>-<date>`, and are overwritten when regenerated the same day.
 
-| File                                   | Content                       |
-| -------------------------------------- | ----------------------------- |
-| `output/data/data-self-report-*.json`  | Raw metrics data              |
-| `output/data/metrics-self-report-*.md` | Script-generated tables       |
-| `output/self-report-*.md`              | Final report with AI analysis |
+| File                                    | Content                            |
+| --------------------------------------- | ---------------------------------- |
+| `output/data/data-self-report-*.json`   | Raw collected metrics              |
+| `output/data/metrics-self-report-*.md`  | Script-generated tables            |
+| `output/self-report-*.md`               | Final report with the AI analysis  |
+| `output/self-report-*.html`             | Styled HTML view with charts       |
 
-## Requirements
+## Housekeeping
 
-- Python 3.11+
-- GitHub personal access token (scope: `repo`)
-- Jira API token (optional, for Jira integration)
-- Anthropic API key (for AI analysis; not needed in Claude Code)
+```bash
+make clean                   # delete output/ and logs/
+make uninstall               # remove the venv
+```
+
+On Windows, use `run.bat <command>` (for example `run report-2w`) instead of `make`.

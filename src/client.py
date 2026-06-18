@@ -1,4 +1,4 @@
-"""GitHub API client — REST + GraphQL, auto rate-limit handling."""
+"""GitHub API client: REST + GraphQL, auto rate-limit handling."""
 from __future__ import annotations
 
 import time
@@ -61,7 +61,7 @@ class GitHubClient:
             resp = self._session.request(method, url, **kwargs)
             if resp.status_code == 403 and "rate limit" in resp.text.lower():
                 retry_after = int(resp.headers.get("Retry-After", 60))
-                log(f"  Rate limit (403) — waiting {retry_after}s (attempt {attempt + 1}/{_MAX_RETRIES})...")
+                log(f"  Rate limit (403): waiting {retry_after}s (attempt {attempt + 1}/{_MAX_RETRIES})...")
                 time.sleep(retry_after)
                 continue
             self._check_rate(resp)
@@ -74,5 +74,5 @@ class GitHubClient:
         if remaining < 5:
             reset_at = int(resp.headers.get("X-RateLimit-Reset", 0))
             wait = max(0, reset_at - time.time()) + 2
-            log(f"  Rate limit ({remaining} remaining) — waiting {wait:.0f}s...")
+            log(f"  Rate limit ({remaining} remaining): waiting {wait:.0f}s...")
             time.sleep(wait)

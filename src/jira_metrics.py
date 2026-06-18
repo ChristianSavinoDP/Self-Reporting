@@ -96,7 +96,10 @@ def _business_hours(start: datetime, end: datetime) -> float:
 def _build_jql(project_key: str, role: str, account_id: str,
                start_date: Optional[str], end_date: Optional[str] = None,
                date_field: str = "updated") -> str:
-    jql = f'project = "{project_key}" AND {role} = "{account_id}" AND issuetype != Epic'
+    # Empty project_key queries the person across every accessible project.
+    jql = f'{role} = "{account_id}" AND issuetype != Epic'
+    if project_key:
+        jql = f'project = "{project_key}" AND ' + jql
     if start_date:
         jql += f' AND {date_field} >= "{start_date}"'
     if end_date:
@@ -156,6 +159,7 @@ class JiraRedFlag:
 class JiraUserData:
     jira_account_id: str
     jira_display_name: str = ""
+    reports_to: str = ""
     tickets: list[JiraTicket] = field(default_factory=list)
     total_tickets: int = 0
     tickets_with_components: int = 0
@@ -189,26 +193,68 @@ def _discover_custom_fields(client: JiraClient) -> dict[str, str]:
 
 
 def _detect_project_statuses(client: JiraClient, project_key: str) -> dict[str, dict]:
-    """Returns {status_name: {category, is_review, is_paused}} for the project."""
-    try:
-        data = client.get(f"/project/{project_key}/statuses")
-    except Exception as e:
-        log(f"    Warning: could not fetch project statuses: {e}")
-        return {}
+    """Returns {status_name: {category, is_review, is_paused}}.
 
+    With a project_key, scopes to that project's statuses. Without one (querying
+    by person across projects), falls back to the instance-wide status catalog.
+    """
     seen: dict[str, dict] = {}
-    for issue_type in data:
-        for s in issue_type.get("statuses", []):
-            name = s.get("name", "")
-            if name in seen:
-                continue
-            cat_key = (s.get("statusCategory") or {}).get("key", "")
-            seen[name] = {
-                "category": cat_key,
-                "is_review": _matches_keywords(name, _REVIEW_KEYWORDS),
-                "is_paused": _matches_keywords(name, _PAUSED_KEYWORDS),
-            }
+
+    def _add(name: str, cat_key: str) -> None:
+        if not name or name in seen:
+            return
+        seen[name] = {
+            "category": cat_key,
+            "is_review": _matches_keywords(name, _REVIEW_KEYWORDS),
+            "is_paused": _matches_keywords(name, _PAUSED_KEYWORDS),
+        }
+
+    if project_key:
+        try:
+            data = client.get(f"/project/{project_key}/statuses")
+        except Exception as e:
+            log(f"    Warning: could not fetch project statuses: {e}")
+            return {}
+        for issue_type in data:
+            for s in issue_type.get("statuses", []):
+                _add(s.get("name", ""), (s.get("statusCategory") or {}).get("key", ""))
+        return seen
+
+    try:
+        data = client.get("/status")
+    except Exception as e:
+        log(f"    Warning: could not fetch global statuses: {e}")
+        return {}
+    for s in data:
+        _add(s.get("name", ""), (s.get("statusCategory") or {}).get("key", ""))
     return seen
+
+
+def _detect_reports_to(
+    client: JiraClient, tickets: list["JiraTicket"], project_key: str,
+) -> str:
+    """Auto-detect 'who you report to' from Jira.
+
+    Resolves to the lead of the project where the person has the most assigned
+    tickets: their tech/team lead, the closest Jira-native signal to a manager.
+    """
+    counts: Counter[str] = Counter()
+    if project_key:
+        counts[project_key] = 1
+    for t in tickets:
+        prefix = t.key.split("-")[0] if "-" in t.key else ""
+        if prefix:
+            counts[prefix] += 1
+
+    for proj, _ in counts.most_common():
+        try:
+            data = client.get(f"/project/{proj}", {"expand": "lead"})
+        except Exception:
+            continue
+        lead = (data.get("lead") or {}).get("displayName", "")
+        if lead:
+            return lead
+    return ""
 
 
 def _resolve_account_id(client: JiraClient, email: str) -> tuple[Optional[str], str]:
@@ -442,7 +488,7 @@ def _fetch_tickets(
     assignee_account_id: Optional[str] = None,
 ) -> list[JiraTicket]:
     issues = client.paginate_jql(jql, fields=fields)
-    log(f"    {len(issues)} {label} — fetching changelogs...")
+    log(f"    {len(issues)} {label}: fetching changelogs...")
     result: list[JiraTicket] = []
     for issue in issues:
         key = issue.get("key", "?")
@@ -503,7 +549,7 @@ def _evaluate_red_flags(
     if ticket.is_blocked:
         detail = f"Blocked ({ticket.block_reason})"
         if ticket.last_comment_preview:
-            detail += f" — {ticket.last_comment_preview}"
+            detail += f": {ticket.last_comment_preview}"
         flags.append(JiraRedFlag(
             ticket_key=ticket.key,
             kind="blocked",
@@ -582,8 +628,8 @@ def collect_jira_metrics(
     token       = os.environ.get("JIRA_TOKEN", "")
     project_key = os.environ.get("JIRA_PROJECT_KEY", "")
 
-    if not all([base_url, email, token, project_key]):
-        log("  Jira config incomplete (missing JIRA_URL/JIRA_EMAIL/JIRA_TOKEN/JIRA_PROJECT_KEY) — skipping Jira")
+    if not all([base_url, email, token]):
+        log("  Jira config incomplete (missing JIRA_URL/JIRA_EMAIL/JIRA_TOKEN): skipping Jira")
         return None
 
     client = create_jira_client(base_url, email, token)
@@ -596,7 +642,7 @@ def collect_jira_metrics(
     gh_org = os.environ.get("GITHUB_ORG", "")
 
     if not jira_email:
-        log("  No Jira email configured — skipping Jira")
+        log("  No Jira email configured: skipping Jira")
         return None
 
     field_map        = _discover_custom_fields(client)
@@ -604,7 +650,7 @@ def collect_jira_metrics(
     flagged_field_id = field_map.get("flagged")
 
     if not impl_field_id:
-        log("    Warning: 'implementer' field not found in Jira — has_implementer will always be False")
+        log("    Warning: 'implementer' field not found in Jira: has_implementer will always be False")
 
     status_map = _detect_project_statuses(client, project_key)
 
@@ -662,9 +708,14 @@ def collect_jira_metrics(
         if t.resolved_at:
             monthly_counter[t.resolved_at[:7]] += 1
 
+    reports_to = _detect_reports_to(client, tickets, project_key)
+    if reports_to:
+        log(f"    Reports to: {reports_to}")
+
     jira_ud = JiraUserData(
         jira_account_id=account_id,
         jira_display_name=display_name or jira_email,
+        reports_to=reports_to,
         tickets=tickets,
         total_tickets=len(tickets),
         tickets_with_components=sum(1 for t in tickets if t.components),

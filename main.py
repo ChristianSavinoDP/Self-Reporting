@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Self-Reporting — unified entry point.
+"""Self-Reporting: unified entry point.
 
 Commands:
-  report   — run full pipeline: GitHub + Jira + Claude analysis (single pass)
-  collect  — collect GitHub + Jira data only (no analysis)
-  analyze  — run Claude analysis on existing data (retry-friendly)
+  report  : run full pipeline: GitHub + Jira + Claude analysis (single pass)
+  collect : collect GitHub + Jira data only (no analysis)
+  analyze : run Claude analysis on existing data (retry-friendly)
 
 Usage:
     python main.py report                         # last 2 weeks
@@ -35,7 +35,11 @@ from src.metrics import (
 
 def _add_period_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--period",   default="biweekly", choices=PERIODS,
-                        help="biweekly (default) | monthly | last-month")
+                        help="biweekly (default) | monthly | last-month | yearly | historic | custom")
+    parser.add_argument("--start-date", default=None,
+                        help="Start date YYYY-MM-DD (required for --period custom)")
+    parser.add_argument("--end-date", default=None,
+                        help="End date YYYY-MM-DD (required for --period custom)")
     parser.add_argument("--output",   default="output")
     parser.add_argument("--language", default=None,
                         help="Report language override (en, es)")
@@ -84,17 +88,26 @@ def _load_config(args) -> tuple[dict, str, str]:
         },
     }
 
-    start, end = resolve_period(args.period)
+    start, end = resolve_period(
+        args.period,
+        getattr(args, "start_date", None),
+        getattr(args, "end_date", None),
+    )
     config["date_range"] = {"start": start, "end": end}
     return config, start, end
 
 
-def _period_label(period: str, start: str, end: str) -> str:
+def _period_label(period: str, start: str | None, end: str | None) -> str:
+    if period == "historic":
+        return "all time"
+    span = f"{start} to {end}"
     return {
-        "biweekly":   f"last 2 weeks ({start} to {end})",
-        "monthly":    f"current month ({start} to {end})",
-        "last-month": f"last month ({start} to {end})",
-    }[period]
+        "biweekly":   f"last 2 weeks ({span})",
+        "monthly":    f"current month ({span})",
+        "last-month": f"last month ({span})",
+        "yearly":     f"year to date ({span})",
+        "custom":     f"custom ({span})",
+    }.get(period, span)
 
 
 def _get_language(args) -> str:
@@ -151,7 +164,7 @@ def cmd_collect(args) -> None:
     output_dir = Path(args.output) / "data"
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    log("Self-Report — Data Collection")
+    log("Self-Report: Data Collection")
     log("=" * 40)
     log(f"Period: {label}")
     log(f"Output: {output_dir}/")
@@ -174,11 +187,11 @@ def cmd_collect(args) -> None:
     log("\n" + "=" * 40)
     log("Jira Enrichment")
     log("=" * 40)
+    # project_key intentionally excluded: Jira is queried by person, not project.
     jira_configured = all([
         os.environ.get("JIRA_URL", ""),
         os.environ.get("JIRA_EMAIL", ""),
         os.environ.get("JIRA_TOKEN", ""),
-        os.environ.get("JIRA_PROJECT_KEY", ""),
     ])
     try:
         jira_data = collect_jira_metrics(config, user)
@@ -186,19 +199,19 @@ def cmd_collect(args) -> None:
         log(f"Warning: Jira collection failed: {e}")
         log("Continuing without Jira data...")
         jira_data = None
-        status_notes.append(f"**Jira data unavailable** — collection failed: {e}")
+        status_notes.append(f"**Jira data unavailable**: collection failed: {e}")
     else:
         if jira_data is None:
             if jira_configured:
                 status_notes.append(
-                    "**Jira data unavailable** — Jira is configured but returned no data "
+                    "**Jira data unavailable**: Jira is configured but returned no data "
                     "(check JIRA_PROJECT_KEY, JIRA_EMAIL, and account permissions)."
                 )
             else:
                 status_notes.append(
-                    "**Jira data not included** — Jira is not configured. Set "
-                    "`JIRA_URL`, `JIRA_EMAIL`, `JIRA_TOKEN` (or `JIRA_API_TOKEN`), and "
-                    "`JIRA_PROJECT_KEY` in `.env` to include Jira metrics."
+                    "**Jira data not included**: Jira is not configured. Set "
+                    "`JIRA_URL`, `JIRA_EMAIL`, and `JIRA_TOKEN` (or `JIRA_API_TOKEN`) "
+                    "in `.env` to include Jira metrics."
                 )
 
     # Save raw data
@@ -220,6 +233,23 @@ def cmd_collect(args) -> None:
     log("\nData collection complete!")
 
 
+def _generate_html(period: str, output: str) -> None:
+    """Render the final Markdown report to a styled, standalone HTML file."""
+    from src.html_renderer import render_html_report
+
+    stem = file_stem(period)
+    md_path = Path(output) / f"{stem}.md"
+    if not md_path.exists():
+        # Fall back to the metrics-only report when no AI analysis exists yet.
+        md_path = Path(output) / "data" / f"metrics-{stem}.md"
+    if not md_path.exists():
+        log(f"  HTML: no report found at {md_path}: skipping.")
+        return
+    html_path = Path(output) / f"{stem}.html"
+    render_html_report(md_path, html_path)
+    log(f"  HTML: {html_path}")
+
+
 def cmd_analyze(args) -> None:
     """Run Claude analysis on existing data (retry-friendly)."""
     from src.analyze import run as analyze_run
@@ -232,6 +262,13 @@ def cmd_analyze(args) -> None:
     except ImportError:
         log("Error: anthropic not installed. Install with: pip install anthropic")
         sys.exit(1)
+    _generate_html(args.period, args.output)
+
+
+def cmd_html(args) -> None:
+    """Render the existing Markdown report to standalone HTML (no API calls)."""
+    setup_log(_log_path("html", args.period))
+    _generate_html(args.period, args.output)
 
 
 def cmd_report(args) -> None:
@@ -239,26 +276,32 @@ def cmd_report(args) -> None:
     setup_log(_log_path("report", args.period))
 
     log("=" * 60)
-    log("  Step 1/2 — Collecting Data (GitHub + Jira)")
+    log("  Step 1/2: Collecting Data (GitHub + Jira)")
     log("=" * 60)
     cmd_collect(args)
 
     log()
     log("=" * 60)
-    log("  Step 2/2 — Claude AI Analysis")
+    log("  Step 2/2: Claude AI Analysis")
     log("=" * 60)
     language = _get_language(args)
     try:
         from src.analyze import run as analyze_run
         analyze_run(args.period, args.output, language)
     except ImportError:
-        log("Warning: anthropic not installed — skipping AI analysis.")
+        log("Warning: anthropic not installed: skipping AI analysis.")
         log("         Install with: pip install anthropic")
+
+    log()
+    log("=" * 60)
+    log("  Generating HTML view")
+    log("=" * 60)
+    _generate_html(args.period, args.output)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Self-Reporting — GitHub + Jira performance self-assessment",
+        description="Self-Reporting: GitHub + Jira performance self-assessment",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
@@ -266,15 +309,26 @@ def main() -> None:
     sub.required = True
 
     for name, help_text in [
-        ("report",  "Full pipeline: collect data + AI analysis (single pass)"),
+        ("report",  "Full pipeline: collect data + AI analysis + HTML (single pass)"),
         ("collect", "Collect GitHub + Jira data only (no AI analysis)"),
         ("analyze", "Run AI analysis on existing data (retry-friendly)"),
+        ("html",    "Render existing Markdown report to standalone HTML"),
     ]:
         sp = sub.add_parser(name, help=help_text)
         _add_period_args(sp)
 
     args = parser.parse_args()
-    {"report": cmd_report, "collect": cmd_collect, "analyze": cmd_analyze}[args.command](args)
+    # Surface custom-date errors as a clean argparse message, not a traceback.
+    try:
+        resolve_period(args.period, getattr(args, "start_date", None), getattr(args, "end_date", None))
+    except ValueError as e:
+        parser.error(str(e))
+    {
+        "report": cmd_report,
+        "collect": cmd_collect,
+        "analyze": cmd_analyze,
+        "html": cmd_html,
+    }[args.command](args)
 
 
 if __name__ == "__main__":
