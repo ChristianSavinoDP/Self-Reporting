@@ -30,6 +30,7 @@ from src.utils import resolve_period, file_stem, to_json, PERIODS, setup_log, lo
 from src.metrics import (
     UserData, PRStats, ReviewStats, ReviewerActivity,
     PRSample, ThreadDetail, ReviewGiven, SelfThread,
+    InsufficientRateLimitError,
 )
 
 
@@ -177,6 +178,9 @@ def cmd_collect(args) -> None:
         user = collect_metrics(config)
     except ValueError as e:
         log(f"\nConfiguration error: {e}")
+        sys.exit(1)
+    except InsufficientRateLimitError as e:
+        log(f"\nRate limit check: {e}")
         sys.exit(1)
     except Exception as e:
         log(f"\nGitHub collection failed: {e}")

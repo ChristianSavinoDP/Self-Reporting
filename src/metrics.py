@@ -3,11 +3,20 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
+
+# Require this multiple of the estimated request count in remaining GraphQL
+# points before starting, since a single batched query can cost more than 1.
+_BUDGET_SAFETY_FACTOR = 3
 
 from .client import GitHubClient
 from .utils import log
+
+
+class InsufficientRateLimitError(RuntimeError):
+    """Raised when the GraphQL budget is too low to finish the run."""
+
 
 # ---------------------------------------------------------------------------
 # GraphQL
@@ -32,27 +41,24 @@ def _is_bot(login: str) -> bool:
     return login.lower() in _BOT_LOGINS or login.lower().endswith("[bot]")
 
 
-_PR_THREADS_QUERY = """
-query($owner: String!, $repo: String!, $number: Int!) {
-  repository(owner: $owner, name: $repo) {
-    pullRequest(number: $number) {
-      merged
-      mergedAt
-      reviewThreads(first: 100) {
+# Per-PR field selection, shared by every aliased pullRequest in a batch.
+_PR_THREADS_FRAGMENT = """
+fragment PRThreads on PullRequest {
+  merged
+  mergedAt
+  reviewThreads(first: 100) {
+    nodes {
+      isResolved
+      isOutdated
+      resolvedBy { login }
+      comments(first: 100) {
         nodes {
-          isResolved
-          isOutdated
-          resolvedBy { login }
-          comments(first: 100) {
+          author { login }
+          body
+          createdAt
+          reactions(first: 10) {
             nodes {
-              author { login }
-              body
-              createdAt
-              reactions(first: 10) {
-                nodes {
-                  user { login }
-                }
-              }
+              user { login }
             }
           }
         }
@@ -61,6 +67,25 @@ query($owner: String!, $repo: String!, $number: Int!) {
   }
 }
 """
+
+# How many PRs to request per GraphQL call. Batching collapses dozens of
+# per-PR round trips into a handful, which is the main lever on both wall
+# time and rate-limit pressure. 10 PRs x 100 threads x 100 comments stays
+# well under GitHub's 500k-node query ceiling.
+_THREADS_BATCH_SIZE = 10
+
+
+def _build_threads_query(count: int) -> str:
+    """Build a batched query aliasing `count` pullRequests under one repository."""
+    var_decls = ", ".join(f"$n{i}: Int!" for i in range(count))
+    aliases = "\n    ".join(
+        f"pr{i}: pullRequest(number: $n{i}) {{ ...PRThreads }}" for i in range(count)
+    )
+    return (
+        _PR_THREADS_FRAGMENT
+        + f"\nquery($owner: String!, $repo: String!, {var_decls}) {{\n"
+        f"  repository(owner: $owner, name: $repo) {{\n    {aliases}\n  }}\n}}\n"
+    )
 
 _REVIEWS_GIVEN_QUERY = """
 query($q: String!, $after: String, $login: String!) {
@@ -283,6 +308,7 @@ def collect_metrics(config: dict) -> UserData:
         pr_map = _prs_org(client, org, login, user, start_dt, end_dt)
 
         total_prs = sum(len(v) for v in pr_map.values())
+        _preflight_graphql_budget(client, pr_map)
         log(f"  review threads ({total_prs} PRs in {len(pr_map)} repos)...")
         for (owner, repo), pr_numbers in pr_map.items():
             _review_threads(client, owner, repo, login, user, pr_numbers)
@@ -417,103 +443,156 @@ def _process_prs(
 # Review threads
 # ---------------------------------------------------------------------------
 
+def _estimate_thread_requests(pr_map: dict) -> int:
+    """GraphQL requests needed to fetch every PR's review threads (batched)."""
+    return sum(
+        (len(pr_numbers) + _THREADS_BATCH_SIZE - 1) // _THREADS_BATCH_SIZE
+        for pr_numbers in pr_map.values()
+    )
+
+
+def _preflight_graphql_budget(client: GitHubClient, pr_map: dict) -> None:
+    """Abort before fetching threads if the GraphQL budget is clearly too low.
+
+    Each batched threads request costs roughly 1 point, but a complex one can
+    cost more, so we require a margin over the bare estimate. Failing here is
+    better than running halfway and silently dropping PRs at the rate limit.
+    """
+    needed = _estimate_thread_requests(pr_map)
+    if needed == 0:
+        return
+
+    try:
+        budget = client.graphql_rate_limit()
+    except Exception as e:
+        log(f"  Warning: could not check GraphQL rate limit: {e}")
+        return
+
+    remaining = budget["remaining"]
+    required = needed * _BUDGET_SAFETY_FACTOR
+    if remaining >= required:
+        return
+
+    reset_at = budget.get("reset", 0)
+    when = (
+        datetime.fromtimestamp(reset_at, tz=timezone.utc).strftime("%H:%M UTC")
+        if reset_at else "unknown"
+    )
+    raise InsufficientRateLimitError(
+        f"GraphQL rate limit too low: {remaining} points left, need about "
+        f"{required} for {needed} batched request(s). Resets at {when}. "
+        f"Wait for the reset, then re-run."
+    )
+
+
 def _review_threads(
     client: GitHubClient,
     owner: str, repo: str, login: str,
     user: UserData, pr_numbers: list[int],
 ) -> None:
-    s = user.reviews
+    for start in range(0, len(pr_numbers), _THREADS_BATCH_SIZE):
+        batch = pr_numbers[start:start + _THREADS_BATCH_SIZE]
+        query = _build_threads_query(len(batch))
+        variables = {"owner": owner, "repo": repo}
+        variables.update({f"n{i}": num for i, num in enumerate(batch)})
 
-    for pr_num in pr_numbers:
         try:
-            data = client.graphql(
-                _PR_THREADS_QUERY,
-                {"owner": owner, "repo": repo, "number": pr_num},
-            )
+            data = client.graphql(query, variables)
         except Exception as e:
-            log(f"    Warning: could not fetch threads for {owner}/{repo}#{pr_num}: {e}")
+            log(f"    Warning: could not fetch threads for {owner}/{repo} "
+                f"PRs {batch[0]}-{batch[-1]}: {e}")
             continue
 
-        pr_data = (data.get("repository") or {}).get("pullRequest") or {}
-        was_merged = pr_data.get("merged", False)
-        merged_at = _dt(pr_data.get("mergedAt"))
-        threads = (pr_data.get("reviewThreads") or {}).get("nodes") or []
+        repository = data.get("repository") or {}
+        for i, pr_num in enumerate(batch):
+            pr_data = repository.get(f"pr{i}") or {}
+            _process_pr_threads(pr_data, owner, repo, login, user, pr_num)
 
-        for thread in threads:
-            comments = (thread.get("comments") or {}).get("nodes") or []
-            if not comments:
-                continue
 
-            first_author = (comments[0].get("author") or {}).get("login", "")
-            if first_author == login:
-                # Self-started thread: collect as proactive communication
-                replies = [c for c in comments[1:] if (c.get("author") or {}).get("login") != login]
-                user.self_threads.append(SelfThread(
-                    pr_number=pr_num,
-                    repo=f"{owner}/{repo}",
-                    comment_preview=comments[0].get("body", "")[:200],
-                    replies_count=len(replies),
-                    created_at=comments[0].get("createdAt", ""),
-                ))
-                continue
+def _process_pr_threads(
+    pr_data: dict, owner: str, repo: str, login: str,
+    user: UserData, pr_num: int,
+) -> None:
+    s = user.reviews
+    was_merged = pr_data.get("merged", False)
+    merged_at = _dt(pr_data.get("mergedAt"))
+    threads = (pr_data.get("reviewThreads") or {}).get("nodes") or []
 
-            first_comment_at = _dt(comments[0].get("createdAt"))
-            if was_merged and merged_at and first_comment_at and first_comment_at > merged_at:
-                continue
+    for thread in threads:
+        comments = (thread.get("comments") or {}).get("nodes") or []
+        if not comments:
+            continue
 
-            is_resolved = thread.get("isResolved", False)
-            is_outdated = thread.get("isOutdated", False)
-
-            user_reply = ""
-            for c in comments[1:]:
-                if (c.get("author") or {}).get("login") == login:
-                    user_reply = (c.get("body") or "")[:200]
-                    break
-            user_replied = bool(user_reply)
-
-            user_reacted = False
-            for c in comments:
-                reactions = (c.get("reactions") or {}).get("nodes") or []
-                for reaction in reactions:
-                    if (reaction.get("user") or {}).get("login") == login:
-                        user_reacted = True
-                        break
-                if user_reacted:
-                    break
-
-            if _is_bot(first_author) and not user_replied and not user_reacted and not is_resolved:
-                continue
-
-            s.threads_received += 1
-
-            if is_resolved:
-                s.resolved += 1
-            elif is_outdated:
-                s.outdated += 1
-            elif was_merged:
-                if user_reacted and not user_replied:
-                    s.reacted_only += 1
-                else:
-                    s.ignored += 1
-            elif user_replied:
-                s.replied_not_resolved += 1
-            else:
-                s.open_pr_unresolved += 1
-
-            s.threads.append(ThreadDetail(
+        first_author = (comments[0].get("author") or {}).get("login", "")
+        if first_author == login:
+            # Self-started thread: collect as proactive communication
+            replies = [c for c in comments[1:] if (c.get("author") or {}).get("login") != login]
+            user.self_threads.append(SelfThread(
                 pr_number=pr_num,
                 repo=f"{owner}/{repo}",
-                is_resolved=is_resolved,
-                is_outdated=is_outdated,
-                was_merged=was_merged,
-                reviewer=first_author,
                 comment_preview=comments[0].get("body", "")[:200],
-                user_replied=user_replied,
-                user_reacted=user_reacted,
-                user_reply_preview=user_reply,
-                resolved_by=(thread.get("resolvedBy") or {}).get("login", ""),
+                replies_count=len(replies),
                 created_at=comments[0].get("createdAt", ""),
             ))
+            continue
+
+        first_comment_at = _dt(comments[0].get("createdAt"))
+        if was_merged and merged_at and first_comment_at and first_comment_at > merged_at:
+            continue
+
+        is_resolved = thread.get("isResolved", False)
+        is_outdated = thread.get("isOutdated", False)
+
+        user_reply = ""
+        for c in comments[1:]:
+            if (c.get("author") or {}).get("login") == login:
+                user_reply = (c.get("body") or "")[:200]
+                break
+        user_replied = bool(user_reply)
+
+        user_reacted = False
+        for c in comments:
+            reactions = (c.get("reactions") or {}).get("nodes") or []
+            for reaction in reactions:
+                if (reaction.get("user") or {}).get("login") == login:
+                    user_reacted = True
+                    break
+            if user_reacted:
+                break
+
+        if _is_bot(first_author) and not user_replied and not user_reacted and not is_resolved:
+            continue
+
+        s.threads_received += 1
+
+        if is_resolved:
+            s.resolved += 1
+        elif is_outdated:
+            s.outdated += 1
+        elif was_merged:
+            if user_reacted and not user_replied:
+                s.reacted_only += 1
+            else:
+                s.ignored += 1
+        elif user_replied:
+            s.replied_not_resolved += 1
+        else:
+            s.open_pr_unresolved += 1
+
+        s.threads.append(ThreadDetail(
+            pr_number=pr_num,
+            repo=f"{owner}/{repo}",
+            is_resolved=is_resolved,
+            is_outdated=is_outdated,
+            was_merged=was_merged,
+            reviewer=first_author,
+            comment_preview=comments[0].get("body", "")[:200],
+            user_replied=user_replied,
+            user_reacted=user_reacted,
+            user_reply_preview=user_reply,
+            resolved_by=(thread.get("resolvedBy") or {}).get("login", ""),
+            created_at=comments[0].get("createdAt", ""),
+        ))
 
 
 # ---------------------------------------------------------------------------
