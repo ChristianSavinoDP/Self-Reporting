@@ -20,8 +20,9 @@ def render_report(
     filename: str = "report.md",
     period_label: str = "",
     jira_data: Optional["JiraUserData"] = None,
+    status_notes: Optional[list] = None,
 ) -> Path:
-    content = _markdown(user, config, period_label, jira_data)
+    content = _markdown(user, config, period_label, jira_data, status_notes)
     path = output_dir / filename
     path.write_text(content, encoding="utf-8")
     log(f"Report: {path}")
@@ -47,6 +48,7 @@ def _markdown(
     config: dict,
     period_label: str = "",
     jira_data: Optional["JiraUserData"] = None,
+    status_notes: Optional[list] = None,
 ) -> str:
     dr    = config.get("date_range", {})
     org   = os.environ.get("GITHUB_ORG", "")
@@ -67,6 +69,15 @@ def _markdown(
         f"**Period:** {period_label or dr.get('start', '—') + ' to today'}  ",
         f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M')}",
         "",
+    ]
+
+    if status_notes:
+        lines.append("> [!WARNING] Data sources")
+        for note in status_notes:
+            lines.append(f"> - {note}")
+        lines.append("")
+
+    lines += [
         "## Pull Requests",
         "",
         f"- Opened: {pr.opened}  |  Merged: **{pr.merged}**  |  Closed without merge: {pr.closed_unmerged}",

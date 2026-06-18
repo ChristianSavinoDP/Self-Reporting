@@ -28,7 +28,44 @@ except ImportError:
 
 import anthropic
 
-MODEL = "claude-opus-4-7"
+_USE_BEDROCK = os.environ.get("CLAUDE_CODE_USE_BEDROCK", "").lower() == "true"
+
+
+def _claude_code_model() -> str | None:
+    """Read the model the user has selected in Claude Code.
+
+    Claude Code does not export the active model to subprocesses, but it
+    persists the selection in its settings.json files. Project settings take
+    precedence over user settings (matching Claude Code's own resolution).
+    """
+    candidates = [
+        ROOT / ".claude" / "settings.local.json",
+        ROOT / ".claude" / "settings.json",
+        Path.home() / ".claude" / "settings.json",
+    ]
+    for path in candidates:
+        try:
+            model = json.loads(path.read_text()).get("model")
+        except (OSError, ValueError):
+            continue
+        if model:
+            # Claude Code appends a context-variant marker (e.g. "[1m]") that
+            # is not part of the Bedrock/Anthropic model ID — strip it.
+            return model.split("[", 1)[0].strip()
+    return None
+
+
+# Model resolution order:
+#   1. REPORT_MODEL / ANTHROPIC_MODEL env override
+#   2. (Bedrock only) the model selected in Claude Code's settings.json
+#   3. hard-coded fallback
+_FALLBACK_MODEL = "us.anthropic.claude-opus-4-8" if _USE_BEDROCK else "claude-opus-4-7"
+MODEL = (
+    os.environ.get("REPORT_MODEL")
+    or os.environ.get("ANTHROPIC_MODEL")
+    or (_claude_code_model() if _USE_BEDROCK else None)
+    or _FALLBACK_MODEL
+)
 
 
 # ---------------------------------------------------------------------------
@@ -161,13 +198,18 @@ def _stream(client, system, messages, max_tokens: int, budget_tokens: int, label
     thinking_shown = False
     text_shown = False
 
-    with client.messages.stream(
+    stream_kwargs = dict(
         model=MODEL,
         max_tokens=max_tokens,
-        thinking={"type": "enabled", "budget_tokens": budget_tokens},
         system=system,
         messages=messages,
-    ) as stream:
+    )
+    if _USE_BEDROCK:
+        stream_kwargs["thinking"] = {"type": "adaptive"}
+    else:
+        stream_kwargs["thinking"] = {"type": "enabled", "budget_tokens": budget_tokens}
+
+    with client.messages.stream(**stream_kwargs) as stream:
         for event in stream:
             if event.type == "content_block_start":
                 if event.content_block.type == "thinking" and not thinking_shown:
@@ -398,7 +440,12 @@ def run(period: str, output: str = "output", language: str = "en") -> None:
             "Use '| Fortalezas | Areas de Mejora | Red Flags |' for the consolidated table."
         )
 
-    client = anthropic.Anthropic(timeout=600.0)
+    if _USE_BEDROCK:
+        for k in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"):
+            os.environ.pop(k, None)
+        client = anthropic.AnthropicBedrock(timeout=600.0)
+    else:
+        client = anthropic.Anthropic(timeout=600.0)
     system = [{
         "type": "text",
         "text": (
