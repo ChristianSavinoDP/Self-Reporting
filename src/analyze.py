@@ -49,7 +49,9 @@ def _claude_code_model() -> str | None:
         except (OSError, ValueError):
             continue
         if model:
-            return model
+            # Claude Code appends a context-variant marker (e.g. "[1m]") that
+            # is not part of the Bedrock/Anthropic model ID — strip it.
+            return model.split("[", 1)[0].strip()
     return None
 
 
