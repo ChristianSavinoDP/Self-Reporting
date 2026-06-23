@@ -249,8 +249,11 @@ def _generate_html(period: str, output: str) -> None:
     if not md_path.exists():
         log(f"  HTML: no report found at {md_path}: skipping.")
         return
+    # Structured data drives the hero + stat grid; absent, the page renders
+    # from the Markdown alone.
+    data_path = Path(output) / "data" / f"data-{stem}.json"
     html_path = Path(output) / f"{stem}.html"
-    render_html_report(md_path, html_path)
+    render_html_report(md_path, html_path, data_path if data_path.exists() else None)
     log(f"  HTML: {html_path}")
 
 

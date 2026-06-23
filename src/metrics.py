@@ -10,7 +10,7 @@ from typing import Optional
 # points before starting, since a single batched query can cost more than 1.
 _BUDGET_SAFETY_FACTOR = 3
 
-from .client import GitHubClient
+from .client import GitHubClient, GraphQLNodeLimitError
 from .utils import log
 
 
@@ -56,11 +56,12 @@ fragment PRThreads on PullRequest {
           author { login }
           body
           createdAt
-          reactions(first: 10) {
-            nodes {
-              user { login }
-            }
-          }
+          # reactionGroups is a bounded list (one per emoji), not a paginated
+          # connection, so it does not multiply the query's node cost the way a
+          # nested reactions(first: N) would. viewerHasReacted answers the only
+          # question we ask (did the report's subject, i.e. the token owner,
+          # react?) without fetching every reactor. See _THREADS_BATCH_SIZE.
+          reactionGroups { viewerHasReacted }
         }
       }
     }
@@ -70,9 +71,16 @@ fragment PRThreads on PullRequest {
 
 # How many PRs to request per GraphQL call. Batching collapses dozens of
 # per-PR round trips into a handful, which is the main lever on both wall
-# time and rate-limit pressure. 10 PRs x 100 threads x 100 comments stays
-# well under GitHub's 500k-node query ceiling.
-_THREADS_BATCH_SIZE = 10
+# time and rate-limit pressure. GitHub caps a query at 500k *possible* nodes,
+# summing each nesting level of the PRThreads fragment. Because reactions are
+# fetched via the bounded reactionGroups field (not a nested first: N
+# connection), per PR that is 100 threads + 100*100 comments = 10,100 nodes,
+# so a batch of 20 (~202k) stays well under the ceiling. Keeping the cost low
+# also keeps the per-query rate-limit point charge low, which is what lets a
+# large window (e.g. a yearly report, 60+ PRs) finish inside the 5000-point
+# hourly GraphQL budget. _review_threads also splits and retries any batch
+# GitHub still rejects, so this is a tuning default, not a correctness guarantee.
+_THREADS_BATCH_SIZE = 20
 
 
 def _build_threads_query(count: int) -> str:
@@ -329,7 +337,25 @@ def collect_metrics(config: dict) -> UserData:
     log("  reviews given...")
     _collect_reviews_given(client, org or "", login, user, start_dt, end_dt)
 
+    _log_graphql_budget(client)
     return user
+
+
+def _log_graphql_budget(client: GitHubClient) -> None:
+    """Log the GraphQL points left after collection, so a run shows how close
+    it came to the 5000/hour ceiling. The /rate_limit lookup is itself free."""
+    try:
+        budget = client.graphql_rate_limit()
+    except Exception:
+        return
+    remaining = budget.get("remaining", 0)
+    limit = budget.get("limit", 5000)
+    reset_at = budget.get("reset", 0)
+    when = (
+        datetime.fromtimestamp(reset_at, tz=timezone.utc).strftime("%H:%M UTC")
+        if reset_at else "unknown"
+    )
+    log(f"  GraphQL budget: {remaining}/{limit} points remaining (resets {when})")
 
 
 # ---------------------------------------------------------------------------
@@ -492,21 +518,47 @@ def _review_threads(
 ) -> None:
     for start in range(0, len(pr_numbers), _THREADS_BATCH_SIZE):
         batch = pr_numbers[start:start + _THREADS_BATCH_SIZE]
-        query = _build_threads_query(len(batch))
-        variables = {"owner": owner, "repo": repo}
-        variables.update({f"n{i}": num for i, num in enumerate(batch)})
+        _fetch_thread_batch(client, owner, repo, login, user, batch)
 
-        try:
-            data = client.graphql(query, variables)
-        except Exception as e:
-            log(f"    Warning: could not fetch threads for {owner}/{repo} "
-                f"PRs {batch[0]}-{batch[-1]}: {e}")
-            continue
 
-        repository = data.get("repository") or {}
-        for i, pr_num in enumerate(batch):
-            pr_data = repository.get(f"pr{i}") or {}
-            _process_pr_threads(pr_data, owner, repo, login, user, pr_num)
+def _fetch_thread_batch(
+    client: GitHubClient,
+    owner: str, repo: str, login: str,
+    user: UserData, batch: list[int],
+) -> None:
+    """Fetch one batch, halving and retrying if GitHub rejects it for too many
+    nodes. A dense PR can blow past the 500k-node ceiling even alone; only then
+    do we give up on it, with a warning, rather than silently dropping the data.
+    """
+    if not batch:
+        return
+
+    query = _build_threads_query(len(batch))
+    variables = {"owner": owner, "repo": repo}
+    variables.update({f"n{i}": num for i, num in enumerate(batch)})
+
+    try:
+        data = client.graphql(query, variables)
+    except GraphQLNodeLimitError as e:
+        if len(batch) == 1:
+            log(f"    Warning: PR {owner}/{repo}#{batch[0]} exceeds GitHub's "
+                f"node limit on its own; skipping its threads: {e}")
+            return
+        mid = len(batch) // 2
+        log(f"    Node limit hit for {owner}/{repo} PRs {batch[0]}-{batch[-1]}; "
+            f"splitting into {mid} + {len(batch) - mid}...")
+        _fetch_thread_batch(client, owner, repo, login, user, batch[:mid])
+        _fetch_thread_batch(client, owner, repo, login, user, batch[mid:])
+        return
+    except Exception as e:
+        log(f"    Warning: could not fetch threads for {owner}/{repo} "
+            f"PRs {batch[0]}-{batch[-1]}: {e}")
+        return
+
+    repository = data.get("repository") or {}
+    for i, pr_num in enumerate(batch):
+        pr_data = repository.get(f"pr{i}") or {}
+        _process_pr_threads(pr_data, owner, repo, login, user, pr_num)
 
 
 def _process_pr_threads(
@@ -550,15 +602,14 @@ def _process_pr_threads(
                 break
         user_replied = bool(user_reply)
 
-        user_reacted = False
-        for c in comments:
-            reactions = (c.get("reactions") or {}).get("nodes") or []
-            for reaction in reactions:
-                if (reaction.get("user") or {}).get("login") == login:
-                    user_reacted = True
-                    break
-            if user_reacted:
-                break
+        # viewerHasReacted is the token owner's flag; the report's subject is
+        # always the token owner (config["user"] comes from GET /user), so this
+        # answers "did the subject react?" without listing every reactor.
+        user_reacted = any(
+            group.get("viewerHasReacted")
+            for c in comments
+            for group in (c.get("reactionGroups") or [])
+        )
 
         if _is_bot(first_author) and not user_replied and not user_reacted and not is_resolved:
             continue

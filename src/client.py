@@ -15,6 +15,14 @@ _MAX_RETRIES = 3
 _MAX_RATE_LIMIT_WAIT = 60  # cap a single rate-limit sleep so it fails fast
 
 
+class GraphQLNodeLimitError(RuntimeError):
+    """Raised when GitHub rejects a query for exceeding its 500k-node ceiling.
+
+    Distinct from a generic GraphQL error so callers can react by splitting the
+    query into smaller batches instead of losing the data.
+    """
+
+
 class GitHubClient:
     def __init__(self, token: str):
         self._session = requests.Session()
@@ -72,6 +80,12 @@ class GitHubClient:
             payload = resp.json()
             errors = payload.get("errors")
             if errors:
+                # A node-limit rejection is terminal: the identical oversized
+                # query can never succeed, so raise (for the caller to split)
+                # instead of retrying. Check it before the rate-limit retry so a
+                # node-limit error is never misrouted into the wait-and-retry path.
+                if self._is_node_limit(errors):
+                    raise GraphQLNodeLimitError(f"GraphQL error: {errors}")
                 if self._is_rate_limited(errors) and attempt < _MAX_RETRIES - 1:
                     self._wait_for_graphql_reset(resp)
                     continue
@@ -86,6 +100,10 @@ class GitHubClient:
             or ("rate limit" in (e.get("message") or "").lower())
             for e in errors
         )
+
+    @staticmethod
+    def _is_node_limit(errors: list) -> bool:
+        return any(e.get("type") == "MAX_NODE_LIMIT_EXCEEDED" for e in errors)
 
     def _wait_for_graphql_reset(self, resp: requests.Response) -> None:
         """Sleep until the GraphQL rate-limit window resets (capped)."""
