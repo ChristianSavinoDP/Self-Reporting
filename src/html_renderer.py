@@ -186,7 +186,14 @@ def _render_table(header: list[str], rows: list[list[str]]) -> str:
         cells = (row + [""] * cols)[:cols]
         body_rows.append("".join(f"<td>{_inline(c)}</td>" for c in cells))
     tbody = "".join(f"<tr>{r}</tr>" for r in body_rows)
-    return f"<table><thead><tr>{thead}</tr></thead><tbody>{tbody}</tbody></table>"
+    # Wrap in a scroll container so wide tables (e.g. the Jira ticket table with
+    # its state-journey column) scroll horizontally instead of overflowing and
+    # clipping the rightmost columns on narrow windows.
+    return (
+        '<div class="table-wrap">'
+        f"<table><thead><tr>{thead}</tr></thead><tbody>{tbody}</tbody></table>"
+        "</div>"
+    )
 
 
 def _render_blockquote(quote_lines: list[str]) -> str:
@@ -218,6 +225,60 @@ _ACCENTS = ["#58a6ff", "#bc8cff", "#3fb950", "#39c5cf", "#f0883e", "#f778ba", "#
 _META_RE    = re.compile(r"^\*\*(.+?):\*\*\s*(.*)$")
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
 _SUMMARY_TITLES = {"summary", "cierre"}
+
+# Meta-label keys as emitted by the Markdown renderer, in either language, so
+# the hero can find them regardless of REPORT_LANG.
+_META_KEYS = {
+    "org_repos": ("Org / Repos",),
+    "period":    ("Period", "Periodo"),
+    "reports_to": ("Reports to", "Reporta a"),
+    "generated": ("Generated", "Generado"),
+}
+
+# UI strings rendered by the HTML layer itself (hero labels, stat cards, tabs).
+_UI: dict[str, dict[str, str]] = {
+    "en": {
+        "eyebrow": "Self-Report",
+        "review_period": "Review Period", "reporting_to": "Reporting To", "generated": "Generated",
+        "by_the_numbers": "By the Numbers",
+        "prs_authored": "PRs Authored", "prs_reviewed": "PRs Reviewed",
+        "review_threads": "Review Threads", "tickets_created": "Tickets Created",
+        "tickets_assigned": "Tickets Assigned", "repos_touched": "Repos",
+        "lines_changed": "Lines Changed", "epics_contributed": "Epics",
+        "merged": "merged", "across_repos": "across {n} repos", "human_prs": "human PRs",
+        "resolved_pct": "{p}% resolved", "with_ac": "{n} with AC",
+        "with_pr_linked": "{n} with PR linked",
+        "epics_sub": "contributed", "repos_sub": "touched",
+        "lines_sub": "estimated, adds + deletions", "repos": "Repos", "tickets": "Tickets",
+        "tab_summary": "Summary", "tab_code": "Code", "tab_jira": "Jira", "tab_metrics": "Metrics",
+    },
+    "es": {
+        "eyebrow": "Self-Report",
+        "review_period": "Periodo", "reporting_to": "Reporta a", "generated": "Generado",
+        "by_the_numbers": "En Numeros",
+        "prs_authored": "PRs Creados", "prs_reviewed": "PRs Revisados",
+        "review_threads": "Threads de Review", "tickets_created": "Tickets Creados",
+        "tickets_assigned": "Tickets Asignados", "repos_touched": "Repos",
+        "lines_changed": "Lineas Cambiadas", "epics_contributed": "Epicas",
+        "merged": "merged", "across_repos": "en {n} repos", "human_prs": "PRs humanos",
+        "resolved_pct": "{p}% resueltos", "with_ac": "{n} con AC",
+        "with_pr_linked": "{n} con PR vinculado",
+        "epics_sub": "contribuidas", "repos_sub": "tocados",
+        "lines_sub": "estimado, adds + deletions", "repos": "Repos", "tickets": "Tickets",
+        "tab_summary": "Resumen", "tab_code": "Codigo", "tab_jira": "Jira", "tab_metrics": "Metricas",
+    },
+}
+
+
+def _ui(language: str | None) -> dict[str, str]:
+    return _UI.get((language or "en").lower(), _UI["en"])
+
+
+def _meta_get(meta: dict[str, str], key: str) -> str:
+    for name in _META_KEYS.get(key, ()):
+        if meta.get(name):
+            return meta[name]
+    return ""
 
 
 def _strip_credits(md: str) -> tuple[str, str]:
@@ -352,7 +413,7 @@ def _num(v: int) -> str:
     return f"{v:,}"
 
 
-def _stat_cards(data: dict) -> list[tuple[str, str, str, str]]:
+def _stat_cards(data: dict, u: dict[str, str]) -> list[tuple[str, str, str, str]]:
     """Build (value, label, sublabel, accent) tuples from the structured data."""
     pr   = data.get("pull_requests", {}) or {}
     ra   = data.get("reviewer_activity", {}) or {}
@@ -374,31 +435,34 @@ def _stat_cards(data: dict) -> list[tuple[str, str, str, str]]:
     lines_est = round(pr.get("avg_lines_changed", 0.0) * opened)
 
     cards: list[tuple[str, str, str, str]] = []
-    cards.append((_num(opened), "PRs Authored", f"{merged} merged", _ACCENTS[0]))
-    cards.append((_num(reviewed), "PRs Reviewed",
-                  f"across {len(review_repos)} repos" if review_repos else "human PRs", _ACCENTS[1]))
+    cards.append((_num(opened), u["prs_authored"], f"{merged} {u['merged']}", _ACCENTS[0]))
+    cards.append((_num(reviewed), u["prs_reviewed"],
+                  u["across_repos"].format(n=len(review_repos)) if review_repos else u["human_prs"], _ACCENTS[1]))
     if threads:
-        cards.append((_num(threads), "Review Threads", f"{res_pct}% resolved", _ACCENTS[5]))
+        cards.append((_num(threads), u["review_threads"], u["resolved_pct"].format(p=res_pct), _ACCENTS[5]))
     if jira:
-        cards.append((_num(jira.get("total_created", 0)), "Tickets Created",
-                      f"{jira.get('created_with_ac', 0)} with AC", _ACCENTS[2]))
-        cards.append((_num(jira.get("total_tickets", 0)), "Tickets Assigned",
-                      f"{jira.get('tickets_with_pr_linked', 0)} with PR linked", _ACCENTS[3]))
+        cards.append((_num(jira.get("total_created", 0)), u["tickets_created"],
+                      u["with_ac"].format(n=jira.get("created_with_ac", 0)), _ACCENTS[2]))
+        cards.append((_num(jira.get("total_tickets", 0)), u["tickets_assigned"],
+                      u["with_pr_linked"].format(n=jira.get("tickets_with_pr_linked", 0)), _ACCENTS[3]))
+        epics = jira.get("epics_contributed", 0)
+        if epics:
+            cards.append((_num(epics), u["epics_contributed"], u["epics_sub"], _ACCENTS[7]))
     if repos:
-        cards.append((_num(len(repos)), "Repos Touched", "contributed", _ACCENTS[6]))
+        cards.append((_num(len(repos)), u["repos_touched"], u["repos_sub"], _ACCENTS[6]))
     if lines_est > 0:
-        cards.append(("~" + _num(lines_est), "Lines Changed", "estimated, adds + deletions", _ACCENTS[4]))
+        cards.append(("~" + _num(lines_est), u["lines_changed"], u["lines_sub"], _ACCENTS[4]))
     return cards
 
 
-def _build_hero(name: str, meta: dict[str, str], data: dict | None) -> str:
+def _build_hero(name: str, meta: dict[str, str], data: dict | None, u: dict[str, str]) -> str:
     name = name or "Self-Report"
-    org      = meta.get("Org / Repos", "")
-    period   = meta.get("Period", "")
-    reports  = meta.get("Reports to", "")
+    org      = _meta_get(meta, "org_repos")
+    period   = _meta_get(meta, "period")
+    reports  = _meta_get(meta, "reports_to")
     if not reports and data:
         reports = (data.get("jira") or {}).get("reports_to", "")
-    generated = meta.get("Generated", "")
+    generated = _meta_get(meta, "generated")
 
     pills: list[str] = []
     if period:
@@ -408,19 +472,21 @@ def _build_hero(name: str, meta: dict[str, str], data: dict | None) -> str:
         ra = data.get("reviewer_activity", {}) or {}
         jira = data.get("jira") or {}
         repos = data.get("repos_analyzed", []) or []
-        pills.append((f"{pr.get('opened', 0)} PRs Authored", _ACCENTS[1]))
-        pills.append((f"{ra.get('human_prs_reviewed', 0)} PRs Reviewed", _ACCENTS[2]))
+        pills.append((f"{pr.get('opened', 0)} {u['prs_authored']}", _ACCENTS[1]))
+        pills.append((f"{ra.get('human_prs_reviewed', 0)} {u['prs_reviewed']}", _ACCENTS[2]))
         if repos:
-            pills.append((f"{len(repos)} Repos", _ACCENTS[6]))
+            pills.append((f"{len(repos)} {u['repos']}", _ACCENTS[6]))
         if jira:
-            pills.append((f"{jira.get('total_tickets', 0)} Tickets", _ACCENTS[3]))
+            pills.append((f"{jira.get('total_tickets', 0)} {u['tickets']}", _ACCENTS[3]))
 
     pills_html = "".join(
         f'<span class="pill" style="--c:{c}">{html.escape(text)}</span>' for text, c in pills
     )
 
     meta_rows = []
-    for label, value in (("Review Period", period), ("Reporting To", reports), ("Generated", generated)):
+    for label, value in (
+        (u["review_period"], period), (u["reporting_to"], reports), (u["generated"], generated)
+    ):
         if value:
             meta_rows.append(
                 f'<div class="meta-row"><span class="meta-label">{html.escape(label)}</span>'
@@ -432,7 +498,7 @@ def _build_hero(name: str, meta: dict[str, str], data: dict | None) -> str:
     return (
         '<header class="hero">'
         '<div class="hero-main">'
-        '<div class="eyebrow">Self-Report</div>'
+        f'<div class="eyebrow">{html.escape(u["eyebrow"])}</div>'
         f'<h1 class="hero-name">{html.escape(name)}</h1>'
         f'{sub}'
         f'<div class="pills">{pills_html}</div>'
@@ -442,10 +508,10 @@ def _build_hero(name: str, meta: dict[str, str], data: dict | None) -> str:
     )
 
 
-def _build_numbers(data: dict | None, period: str) -> str:
+def _build_numbers(data: dict | None, period: str, u: dict[str, str]) -> str:
     if not data:
         return ""
-    cards = _stat_cards(data)
+    cards = _stat_cards(data, u)
     if not cards:
         return ""
     card_html = "".join(
@@ -459,7 +525,7 @@ def _build_numbers(data: dict | None, period: str) -> str:
     period_html = f'<span class="numbers-period">{html.escape(period)}</span>' if period else ""
     return (
         '<div class="numbers">'
-        f'<div class="numbers-head"><span class="numbers-chip">By the Numbers</span>{period_html}</div>'
+        f'<div class="numbers-head"><span class="numbers-chip">{html.escape(u["by_the_numbers"])}</span>{period_html}</div>'
         f'<div class="cards">{card_html}</div>'
         '</div>'
     )
@@ -469,13 +535,30 @@ def _build_numbers(data: dict | None, period: str) -> str:
 # Tabs assembly
 # ---------------------------------------------------------------------------
 
+# Title fragments (any language) that mark an AI-analysis section as belonging
+# to the Jira tab rather than the GitHub/Code tab. Matched case-insensitively as
+# substrings. Only consulted for analysis sections; the chart and other level-2
+# metrics sections route to the Metrics tab before this is checked.
+_JIRA_TITLE_HINTS = ("jira", "ticket")
+
+
+def _is_jira_section(title: str) -> bool:
+    low = title.strip().lower()
+    return any(h in low for h in _JIRA_TITLE_HINTS)
+
+
 def _build_body(body_md: str, data: dict | None) -> str:
-    """Assemble the hero, stat grid and tabbed body from the report Markdown."""
+    """Assemble the hero, stat grid and tabbed body from the report Markdown.
+
+    Tabs: Summary (numbers + synthesis + highlights), Code (GitHub AI analysis),
+    Jira (Jira AI analysis), Metrics (all raw metrics tables + chart).
+    """
+    u = _ui((data or {}).get("language"))
     preamble_md, sections = _split_sections(body_md)
     name, meta, notes_md = _parse_preamble(preamble_md.split("\n"))
-    period = meta.get("Period", "")
+    period = _meta_get(meta, "period")
 
-    # Pull the consolidated highlights table into the Overview tab.
+    # Pull the consolidated highlights table into the Summary tab.
     highlights_md: str | None = None
     for sec in sections:
         if sec["kind"] == "analysis":
@@ -485,44 +568,53 @@ def _build_body(body_md: str, data: dict | None) -> str:
                 sec["md"] = _strip_trailing_hr(remaining)
                 break
 
+    # Route: synthesis to Summary; AI analysis split Code/Jira by title; all raw
+    # metrics tables (level-2 sections, incl. the chart) to the Metrics tab.
     summary_md: str | None = None
-    analysis_secs: list[dict] = []
+    code_analysis: list[dict] = []
+    jira_analysis: list[dict] = []
     metrics_secs: list[dict] = []
     for sec in sections:
+        title = sec["title"]
         if sec["kind"] == "metrics":
             metrics_secs.append(sec)
-        elif sec["title"].strip().lower() in _SUMMARY_TITLES:
+        elif title.strip().lower() in _SUMMARY_TITLES:
             summary_md = sec["md"]
+        elif _is_jira_section(title):
+            jira_analysis.append(sec)
         else:
-            analysis_secs.append(sec)
+            code_analysis.append(sec)
 
-    # --- Overview tab ---
+    def _join(secs: list[dict]) -> str:
+        return "\n".join(
+            f'<section class="report-section">{_md_to_html(s["md"])}</section>'
+            for s in secs if s["md"].strip()
+        )
+
+    # --- Summary tab ---
     overview_parts: list[str] = []
     if notes_md:
         overview_parts.append(f'<div class="notes">{_md_to_html(notes_md)}</div>')
-    overview_parts.append(_build_numbers(data, period))
+    overview_parts.append(_build_numbers(data, period, u))
     if summary_md:
         overview_parts.append(f'<div class="summary-box">{_md_to_html(summary_md)}</div>')
     if highlights_md:
         overview_parts.append(f'<div class="highlights">{_md_to_html(highlights_md)}</div>')
     overview_html = "\n".join(p for p in overview_parts if p)
 
-    analysis_html = "\n".join(
-        f'<section class="report-section">{_md_to_html(s["md"])}</section>'
-        for s in analysis_secs if s["md"].strip()
-    )
-    metrics_html = "\n".join(
-        f'<section class="report-section">{_md_to_html(s["md"])}</section>'
-        for s in metrics_secs if s["md"].strip()
-    )
+    code_html = _join(code_analysis)
+    jira_html = _join(jira_analysis)
+    metrics_html = _join(metrics_secs)
 
-    tabs = [("overview", "Overview", overview_html)]
-    if analysis_html:
-        tabs.append(("analysis", "AI Analysis", analysis_html))
+    tabs = [("overview", u["tab_summary"], overview_html)]
+    if code_html:
+        tabs.append(("code", u["tab_code"], code_html))
+    if jira_html:
+        tabs.append(("jira", u["tab_jira"], jira_html))
     if metrics_html:
-        tabs.append(("metrics", "Metrics", metrics_html))
+        tabs.append(("metrics", u["tab_metrics"], metrics_html))
 
-    hero = _build_hero(name, meta, data)
+    hero = _build_hero(name, meta, data, u)
     buttons = "".join(
         f'<button class="tab-btn{" active" if i == 0 else ""}" '
         f'onclick="showTab(\'tab-{tab_id}\', this)">{html.escape(label)}</button>'
@@ -646,8 +738,13 @@ code {
 }
 pre { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px; overflow: auto; }
 pre code { background: none; padding: 0; font-size: 90%; }
-pre.mermaid { background: var(--surface); border: 1px solid var(--border); text-align: center; }
-table { border-collapse: collapse; width: 100%; margin: 1em 0; font-size: 14px; }
+pre.mermaid { background: var(--surface); border: 1px solid var(--border); text-align: center; overflow-x: auto; }
+/* Mermaid emits a fixed-width SVG (e.g. 700px); let it shrink to the container
+   so a narrow window or the metrics panel can never clip the chart. */
+pre.mermaid svg { max-width: 100%; height: auto; }
+.table-wrap { overflow-x: auto; margin: 1em 0; }
+table { border-collapse: collapse; width: 100%; margin: 0; font-size: 14px; }
+.table-wrap table { min-width: 520px; }
 th, td { border: 1px solid var(--border); padding: 9px 12px; text-align: left; vertical-align: top; }
 th { background: var(--surface2); font-weight: 600; }
 tr:nth-child(even) td { background: rgba(110,118,129,.06); }
@@ -674,13 +771,25 @@ _SCRIPTS = """
 function showTab(id, btn) {
   document.querySelectorAll('.tab-panel').forEach(function (p) { p.classList.remove('active'); });
   document.querySelectorAll('.tab-btn').forEach(function (b) { b.classList.remove('active'); });
-  document.getElementById(id).classList.add('active');
+  var panel = document.getElementById(id);
+  panel.classList.add('active');
   btn.classList.add('active');
+  // Mermaid can only measure a chart once its tab is visible; rendering it
+  // while the panel is display:none clips the axes and bars. Render on show.
+  if (window.renderMermaidIn) window.renderMermaidIn(panel);
 }
 </script>
 <script type="module">
   import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
-  mermaid.initialize({ startOnLoad: true, theme: "dark" });
+  // startOnLoad would render every chart immediately, including those in
+  // hidden tabs, which clips them. Render lazily when a tab becomes visible.
+  mermaid.initialize({ startOnLoad: false, theme: "dark" });
+  window.renderMermaidIn = function (panel) {
+    var nodes = panel.querySelectorAll('.mermaid:not([data-processed])');
+    if (nodes.length) mermaid.run({ nodes: Array.from(nodes) });
+  };
+  var active = document.querySelector('.tab-panel.active');
+  if (active) window.renderMermaidIn(active);
 </script>
 """
 

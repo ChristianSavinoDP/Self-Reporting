@@ -94,19 +94,19 @@ endif
 # ── Data collection only ─────────────────────────────────────────────────────
 
 collect-2w: $(VENV)
-	$(PYTHON) main.py collect --period biweekly
+	$(PYTHON) main.py collect --period biweekly $(LANG_FLAG)
 
 collect-monthly: $(VENV)
-	$(PYTHON) main.py collect --period monthly
+	$(PYTHON) main.py collect --period monthly $(LANG_FLAG)
 
 collect-last-month: $(VENV)
-	$(PYTHON) main.py collect --period last-month
+	$(PYTHON) main.py collect --period last-month $(LANG_FLAG)
 
 collect-yearly: $(VENV)
-	$(PYTHON) main.py collect --period yearly
+	$(PYTHON) main.py collect --period yearly $(LANG_FLAG)
 
 collect-historic: $(VENV)
-	$(PYTHON) main.py collect --period historic
+	$(PYTHON) main.py collect --period historic $(LANG_FLAG)
 
 collect-custom: $(VENV)
 ifndef START
@@ -115,7 +115,7 @@ endif
 ifndef END
 	$(error END is required. Usage: make collect-custom START=2026-01-01 END=2026-03-31)
 endif
-	$(PYTHON) main.py collect --period custom --start-date $(START) --end-date $(END)
+	$(PYTHON) main.py collect --period custom --start-date $(START) --end-date $(END) $(LANG_FLAG)
 
 # ── Re-run AI analysis (retry-friendly) ──────────────────────────────────────
 

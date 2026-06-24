@@ -116,6 +116,7 @@ How to interpret:
 - Merged + unresolved + no reply + reacted = **acknowledged** (emoji is valid for suggestions/nits, NOT for questions/design concerns)
 - Resolved by reviewer without author reply = possible concealed ignore; check context
 - Response ratio: <30% = red flag, 30-70% = area for improvement, >70% = don't mention
+- **Severity and recency over count.** A handful of low-severity nits ignored on PRs that already merged is NOT a red flag, especially if the threads are old (created 1+ month ago, use `created_at`) and the behavior did not repeat recently. A red flag is for an active, recurring, or high-severity gap, not for something that happened once long ago and was not repeated. Instead, fold old ignored nits into Areas for Improvement framed as a forward-looking habit ("acknowledge low-severity nits before merging"), so it reads as prevention, not as a current problem. Reserve the red flag for ignored threads that are recent OR substantive (design concerns, bugs, security), not stale nits.
 
 ---
 
@@ -179,6 +180,7 @@ Include: summary stats, red flags (if any; if empty, don't mention), time_in_sta
 - "Code Reviewed 2" = merged, awaiting deploy → never flag time here
 - Tickets you created that never moved = prioritization issue, not your problem as creator
 - Tickets in review state without implementer = you may be the reviewer, not implementer → context only
+- **Cross-board missing components = neutral context, not a flag.** The board is the key prefix (e.g. `DBI-1234` → `DBI`); your main board is the most frequent prefix across your tickets. For `missing_components` on a ticket from a *different* board than your main one (e.g. `LEDGR-*`, `MIMO-*` when you mostly work `DBI-*`), do NOT report it as a red flag OR an area for improvement: an empty component there usually means you legitimately did not know which of that team's services to tag. Mention it only as neutral context if relevant. This exception applies to `missing_components` only, and only for off-main-board tickets; on your main board, treat it as the table says.
 
 #### Blocked Tickets
 
@@ -199,7 +201,7 @@ Investigate cause before flagging:
 
 | Signal                 | Threshold                                  |
 | ---------------------- | ------------------------------------------ |
-| Ignored threads        | > 0                                        |
+| Ignored threads        | recent or substantive, not stale nits      |
 | Empty descriptions     | > 2 (only if change warranted description) |
 | Avg description length | < 100 chars                                |
 | Resolution rate        | < 50%                                      |

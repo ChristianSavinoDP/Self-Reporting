@@ -159,6 +159,7 @@ def cmd_collect(args) -> None:
     from src.renderer import render_report
 
     setup_log(_log_path("collect", args.period))
+    language   = _get_language(args)
     config, start, end = _load_config(args)
     stem       = file_stem(args.period)
     label      = _period_label(args.period, start, end)
@@ -222,6 +223,9 @@ def cmd_collect(args) -> None:
     data = to_json(user)
     if jira_data:
         data["jira"] = to_json(jira_data)
+    # Persist the language so the HTML renderer (which may run later via
+    # `html-*` from data alone) localizes its labels to match the report.
+    data["language"] = language
 
     data_path = output_dir / f"data-{stem}.json"
     with open(data_path, "w") as f:
@@ -233,7 +237,8 @@ def cmd_collect(args) -> None:
                   filename=f"metrics-{stem}.md",
                   period_label=label,
                   jira_data=jira_data,
-                  status_notes=status_notes)
+                  status_notes=status_notes,
+                  language=language)
     log("\nData collection complete!")
 
 

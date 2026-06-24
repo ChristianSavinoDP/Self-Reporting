@@ -146,6 +146,7 @@ class JiraTicket:
     issue_type: str = ""
     resolved_at: str = ""
     assigned_at: str = ""
+    epic_key: str = ""
 
 
 @dataclass
@@ -172,6 +173,7 @@ class JiraUserData:
     created_with_ac: int = 0
     monthly_resolved: dict[str, int] = field(default_factory=dict)
     red_flags: list[JiraRedFlag] = field(default_factory=list)
+    epics_contributed: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -449,6 +451,15 @@ def _process_ticket(
 
     assigned_at = _find_assigned_at(changelog, assignee_account_id) if assignee_account_id else ""
 
+    # The epic a ticket belongs to is its parent when that parent is an Epic.
+    # In modern Jira Cloud both team- and company-managed projects expose this
+    # via the `parent` field, so we do not need the legacy epic-link custom field.
+    epic_key = ""
+    parent = fields.get("parent") or {}
+    parent_type = ((parent.get("fields") or {}).get("issuetype") or {}).get("name", "")
+    if parent.get("key") and parent_type.lower() == "epic":
+        epic_key = parent["key"]
+
     return JiraTicket(
         key=key,
         summary=fields.get("summary", ""),
@@ -472,6 +483,7 @@ def _process_ticket(
         issue_type=issue_type,
         resolved_at=resolved_at,
         assigned_at=assigned_at,
+        epic_key=epic_key,
     )
 
 
@@ -661,7 +673,7 @@ def collect_jira_metrics(
         and not info.get("is_paused")
     ]
 
-    fields_to_fetch = ["summary", "status", "issuetype", "components", "comment", "created", "updated", "resolution"]
+    fields_to_fetch = ["summary", "status", "issuetype", "components", "comment", "created", "updated", "resolution", "parent"]
     if impl_field_id:
         fields_to_fetch.append(impl_field_id)
     if flagged_field_id:
@@ -703,10 +715,20 @@ def collect_jira_metrics(
         label="created tickets",
     )
 
+    # Count a resolution only if it happened inside the report's date range.
+    # The assignee query filters on `updated`, so a ticket resolved before the
+    # range can still match (something touched it later); counting it by its
+    # resolution month would otherwise show a month outside the period.
     monthly_counter: Counter[str] = Counter()
     for t in tickets:
-        if t.resolved_at:
-            monthly_counter[t.resolved_at[:7]] += 1
+        if not t.resolved_at:
+            continue
+        resolved_day = t.resolved_at[:10]
+        if start_date and resolved_day < start_date:
+            continue
+        if end_date and resolved_day > end_date:
+            continue
+        monthly_counter[t.resolved_at[:7]] += 1
 
     reports_to = _detect_reports_to(client, tickets, project_key)
     if reports_to:
@@ -727,6 +749,7 @@ def collect_jira_metrics(
         created_with_components=sum(1 for t in created_tickets if t.components),
         created_with_ac=sum(1 for t in created_tickets if t.has_ac),
         monthly_resolved=dict(sorted(monthly_counter.items())),
+        epics_contributed=len({t.epic_key for t in tickets if t.epic_key}),
     )
 
     for ticket in tickets:

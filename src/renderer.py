@@ -17,6 +17,106 @@ REPORT_AUTHOR = "ChristianSavinoDP"
 REPORT_COLLABORATORS = ["ffernandez-dailypay", "logan-dp"]
 
 
+# Code-generated report strings, per language. The AI analysis already honors
+# the language; these keep the metrics sections (rendered here) in the same
+# language so the report is never half English, half Spanish. Falls back to
+# English for any unsupported language.
+_STRINGS: dict[str, dict[str, str]] = {
+    "en": {
+        "org_repos": "Org / Repos",
+        "period": "Period",
+        "reports_to": "Reports to",
+        "generated": "Generated",
+        "data_sources": "Data sources",
+        "pull_requests": "Pull Requests",
+        "pr_opened": "Opened", "pr_merged": "Merged", "pr_closed": "Closed without merge",
+        "pr_avg_merge": "Average merge time",
+        "pr_avg_desc": "Average description length",
+        "pr_empty_desc": "Empty descriptions",
+        "pr_avg_files": "Average files changed",
+        "pr_avg_lines": "Average lines changed",
+        "pr_drafts": "Draft PRs",
+        "chars": "chars",
+        "reviews_received": "Review Comments Received",
+        "threads_received": "Threads received",
+        "resolved": "Resolved",
+        "ignored": "Ignored (merged without addressing)",
+        "reacted_only": "Acknowledged with reaction (no reply)",
+        "replied_not_resolved": "Replied without resolving",
+        "pending_open": "Pending on open PRs",
+        "not_counted": "not counted in resolution rate",
+        "reviews_given": "Reviews Given",
+        "human_prs": "Human PRs", "bot_prs": "Bot PRs",
+        "prs_reviewed": "PRs reviewed",
+        "approved": "Approved", "changes_requested": "Changes requested", "comments_only": "Comments only",
+        "monthly_progress": "Monthly Progress: Tickets Resolved",
+        "chart_title": "Tickets resolved per month",
+        "chart_y": "Tickets",
+        "jira_tickets": "Jira Tickets",
+        "total": "Total", "with_components": "With components", "with_implementer": "With implementer",
+        "blocked": "Blocked", "with_pr_linked": "With PR linked",
+        "no_tickets": "_No tickets in this period._",
+        "col_key": "Key", "col_summary": "Summary", "col_status": "Status",
+        "col_journey": "State Journey", "col_blocked": "Blocked", "col_pr_linked": "PR Linked",
+        "red_flags": "Red Flags",
+        "col_ticket": "Ticket", "col_flags": "Flags", "col_detail": "Detail",
+        "tickets_created": "Tickets Created",
+        "with_ac": "With AC",
+        "col_type": "Type", "col_components": "Components", "col_ac": "AC", "col_description": "Description",
+        "epics_contributed": "Epics Contributed",
+        "yes": "Yes", "no": "No", "automation": "Automation", "abbreviated": "Abbreviated",
+    },
+    "es": {
+        "org_repos": "Org / Repos",
+        "period": "Periodo",
+        "reports_to": "Reporta a",
+        "generated": "Generado",
+        "data_sources": "Fuentes de datos",
+        "pull_requests": "Pull Requests",
+        "pr_opened": "Abiertos", "pr_merged": "Merged", "pr_closed": "Cerrados sin merge",
+        "pr_avg_merge": "Tiempo promedio hasta merge",
+        "pr_avg_desc": "Largo promedio de descripcion",
+        "pr_empty_desc": "Descripciones vacias",
+        "pr_avg_files": "Promedio de archivos cambiados",
+        "pr_avg_lines": "Promedio de lineas cambiadas",
+        "pr_drafts": "PRs en draft",
+        "chars": "chars",
+        "reviews_received": "Comentarios de Review Recibidos",
+        "threads_received": "Threads recibidos",
+        "resolved": "Resueltos",
+        "ignored": "Ignorados (merged sin atender)",
+        "reacted_only": "Reconocidos con reaccion (sin responder)",
+        "replied_not_resolved": "Respondidos sin resolver",
+        "pending_open": "Pendientes en PRs abiertos",
+        "not_counted": "no cuentan en la tasa de resolucion",
+        "reviews_given": "Reviews Realizados",
+        "human_prs": "PRs de Humanos", "bot_prs": "PRs de Bots",
+        "prs_reviewed": "PRs revisados",
+        "approved": "Aprobados", "changes_requested": "Cambios solicitados", "comments_only": "Solo comentarios",
+        "monthly_progress": "Progreso Mensual: Tickets Resueltos",
+        "chart_title": "Tickets resueltos por mes",
+        "chart_y": "Tickets",
+        "jira_tickets": "Tickets de Jira",
+        "total": "Total", "with_components": "Con componentes", "with_implementer": "Con implementer",
+        "blocked": "Bloqueados", "with_pr_linked": "Con PR vinculado",
+        "no_tickets": "_Sin tickets en este periodo._",
+        "col_key": "Key", "col_summary": "Resumen", "col_status": "Estado",
+        "col_journey": "Recorrido de Estados", "col_blocked": "Bloqueado", "col_pr_linked": "PR Vinculado",
+        "red_flags": "Red Flags",
+        "col_ticket": "Ticket", "col_flags": "Flags", "col_detail": "Detalle",
+        "tickets_created": "Tickets Creados",
+        "with_ac": "Con AC",
+        "col_type": "Tipo", "col_components": "Componentes", "col_ac": "AC", "col_description": "Descripcion",
+        "epics_contributed": "Epicas Contribuidas",
+        "yes": "Si", "no": "No", "automation": "Automatizacion", "abbreviated": "Abreviado",
+    },
+}
+
+
+def _strings(language: str) -> dict[str, str]:
+    return _STRINGS.get((language or "en").lower(), _STRINGS["en"])
+
+
 def render_report(
     user: UserData,
     config: dict,
@@ -25,8 +125,9 @@ def render_report(
     period_label: str = "",
     jira_data: Optional["JiraUserData"] = None,
     status_notes: Optional[list] = None,
+    language: str = "en",
 ) -> Path:
-    content = _markdown(user, config, period_label, jira_data, status_notes)
+    content = _markdown(user, config, period_label, jira_data, status_notes, language)
     path = output_dir / filename
     path.write_text(content, encoding="utf-8")
     log(f"Report: {path}")
@@ -62,7 +163,7 @@ def _month_label(ym: str) -> str:
         return ym
 
 
-def _monthly_resolution_chart(monthly: dict[str, int], login: str) -> list[str]:
+def _monthly_resolution_chart(monthly: dict[str, int], login: str, t: dict[str, str]) -> list[str]:
     """Mermaid bar chart of resolved tickets per month (long periods only)."""
     if len(monthly) < 2:
         return []
@@ -72,13 +173,13 @@ def _monthly_resolution_chart(monthly: dict[str, int], login: str) -> list[str]:
     max_val = max(monthly.values())
     return [
         "",
-        "### Monthly Progress: Tickets Resolved",
+        f"## {t['monthly_progress']}",
         "",
         "```mermaid",
         "xychart-beta",
-        f'    title "Tickets resolved per month: @{login}"',
+        f'    title "{t["chart_title"]}: @{login}"',
         f"    x-axis [{labels}]",
-        f'    y-axis "Tickets" 0 --> {max_val + 1}',
+        f'    y-axis "{t["chart_y"]}" 0 --> {max_val + 1}',
         f"    bar [{values}]",
         "```",
         "",
@@ -91,7 +192,9 @@ def _markdown(
     period_label: str = "",
     jira_data: Optional["JiraUserData"] = None,
     status_notes: Optional[list] = None,
+    language: str = "en",
 ) -> str:
+    t     = _strings(language)
     dr    = config.get("date_range", {})
     org   = os.environ.get("GITHUB_ORG", "")
     repos = org or ", ".join(f"{r['owner']}/{r['repo']}" for r in config.get("repositories", []))
@@ -108,73 +211,78 @@ def _markdown(
     lines = [
         title,
         "",
-        f"**Org / Repos:** {repos}  ",
-        f"**Period:** {period_label or dr.get('start', '-') + ' to today'}  ",
+        f"**{t['org_repos']}:** {repos}  ",
+        f"**{t['period']}:** {period_label or dr.get('start', '-') + ' to today'}  ",
     ]
     if jira_data and jira_data.reports_to:
-        lines.append(f"**Reports to:** {jira_data.reports_to}  ")
+        lines.append(f"**{t['reports_to']}:** {jira_data.reports_to}  ")
     lines += [
-        f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+        f"**{t['generated']}:** {datetime.now().strftime('%Y-%m-%d %H:%M')}",
         "",
     ]
 
     if status_notes:
-        lines.append("> [!WARNING] Data sources")
+        lines.append(f"> [!WARNING] {t['data_sources']}")
         for note in status_notes:
             lines.append(f"> - {note}")
         lines.append("")
 
     lines += [
-        "## Pull Requests",
+        f"## {t['pull_requests']}",
         "",
-        f"- Opened: {pr.opened}  |  Merged: **{pr.merged}**  |  Closed without merge: {pr.closed_unmerged}",
-        f"- Average merge time: {_fmt_hours(pr.avg_merge_hours)}",
-        f"- Average description length: {pr.avg_description_length:.0f} chars",
-        f"- Empty descriptions: {pr.empty_descriptions}",
-        f"- Average files changed: {pr.avg_files_changed:.1f}",
-        f"- Average lines changed: {pr.avg_lines_changed:.0f}",
+        f"- {t['pr_opened']}: {pr.opened}  |  {t['pr_merged']}: **{pr.merged}**  |  {t['pr_closed']}: {pr.closed_unmerged}",
+        f"- {t['pr_avg_merge']}: {_fmt_hours(pr.avg_merge_hours)}",
+        f"- {t['pr_avg_desc']}: {pr.avg_description_length:.0f} {t['chars']}",
+        f"- {t['pr_empty_desc']}: {pr.empty_descriptions}",
+        f"- {t['pr_avg_files']}: {pr.avg_files_changed:.1f}",
+        f"- {t['pr_avg_lines']}: {pr.avg_lines_changed:.0f}",
     ]
 
     draft_count = sum(1 for p in user.pr_samples if p.is_draft)
     if draft_count:
-        lines.append(f"- Draft PRs: {draft_count}")
+        lines.append(f"- {t['pr_drafts']}: {draft_count}")
 
     lines += [
         "",
-        "## Review Comments Received",
+        f"## {t['reviews_received']}",
         "",
-        f"- Threads received: **{r.threads_received}**",
-        f"- Resolved: {r.resolved} ({_pct(r.resolution_rate)})",
-        f"- Ignored (merged without addressing): **{r.ignored}** ({_pct(r.ignore_rate)})",
+        f"- {t['threads_received']}: **{r.threads_received}**",
+        f"- {t['resolved']}: {r.resolved} ({_pct(r.resolution_rate)})",
+        f"- {t['ignored']}: **{r.ignored}** ({_pct(r.ignore_rate)})",
     ]
     if r.reacted_only:
-        lines.append(f"- Acknowledged with reaction (no reply): {r.reacted_only}")
-    lines.append(f"- Replied without resolving: {r.replied_not_resolved}")
+        lines.append(f"- {t['reacted_only']}: {r.reacted_only}")
+    lines.append(f"- {t['replied_not_resolved']}: {r.replied_not_resolved}")
     if r.open_pr_unresolved:
-        lines.append(f"- Pending on open PRs: {r.open_pr_unresolved} (not counted in resolution rate)")
+        lines.append(f"- {t['pending_open']}: {r.open_pr_unresolved} ({t['not_counted']})")
 
     lines += [
         "",
-        "## Reviews Given",
+        f"## {t['reviews_given']}",
         "",
-        "### Human PRs",
+        f"### {t['human_prs']}",
         "",
-        f"- PRs reviewed: **{ra.human_prs_reviewed}**",
-        f"- Approved: {ra.human_approvals} | Changes requested: {ra.human_changes_requested} | Comments only: {ra.human_comments}",
+        f"- {t['prs_reviewed']}: **{ra.human_prs_reviewed}**",
+        f"- {t['approved']}: {ra.human_approvals} | {t['changes_requested']}: {ra.human_changes_requested} | {t['comments_only']}: {ra.human_comments}",
     ]
 
     if ra.bot_prs_reviewed:
         lines += [
             "",
-            "### Bot PRs",
+            f"### {t['bot_prs']}",
             "",
-            f"- PRs reviewed: **{ra.bot_prs_reviewed}**",
-            f"- Approved: {ra.bot_approvals} | Changes requested: {ra.bot_changes_requested} | Comments only: {ra.bot_comments}",
+            f"- {t['prs_reviewed']}: **{ra.bot_prs_reviewed}**",
+            f"- {t['approved']}: {ra.bot_approvals} | {t['changes_requested']}: {ra.bot_changes_requested} | {t['comments_only']}: {ra.bot_comments}",
         ]
 
+    # Monthly chart sits right after Reviews Given (before the Jira tables).
     if jira_data:
         multi_month = is_multi_month(dr.get("start"), dr.get("end"))
-        lines += _render_jira_section(jira_data, multi_month)
+        if multi_month and jira_data.monthly_resolved:
+            lines += _monthly_resolution_chart(
+                jira_data.monthly_resolved, jira_data.jira_display_name or "user", t
+            )
+        lines += _render_jira_section(jira_data, t, language)
 
     return "\n".join(lines).rstrip() + "\n\n" + credits_block() + "\n"
 
@@ -192,15 +300,27 @@ def credits_block() -> str:
 
 _SIGNIFICANT_FLAG_KINDS = frozenset({"stuck_in_progress", "blocked", "no_pr_linked", "no_pr_comment"})
 
-_KIND_LABELS: dict[str, str] = {
-    "stuck_in_progress":   "Stuck",
-    "blocked":             "Blocked",
-    "missing_components":  "No components",
-    "missing_implementer": "No implementer",
-    "no_pr_linked":        "No PR",
-    "no_pr_comment":       "No PR comment",
-    "missing_ac":          "No AC",
-    "missing_description": "No description",
+_KIND_LABELS: dict[str, dict[str, str]] = {
+    "en": {
+        "stuck_in_progress":   "Stuck",
+        "blocked":             "Blocked",
+        "missing_components":  "No components",
+        "missing_implementer": "No implementer",
+        "no_pr_linked":        "No PR",
+        "no_pr_comment":       "No PR comment",
+        "missing_ac":          "No AC",
+        "missing_description": "No description",
+    },
+    "es": {
+        "stuck_in_progress":   "Estancado",
+        "blocked":             "Bloqueado",
+        "missing_components":  "Sin componentes",
+        "missing_implementer": "Sin implementer",
+        "no_pr_linked":        "Sin PR",
+        "no_pr_comment":       "Sin comentario de PR",
+        "missing_ac":          "Sin AC",
+        "missing_description": "Sin descripcion",
+    },
 }
 
 
@@ -222,55 +342,56 @@ def _fmt_state_journey(time_in_status: dict[str, float]) -> str:
     return " > ".join(parts) if parts else "-"
 
 
-def _render_jira_section(jd: "JiraUserData", multi_month: bool = False) -> list[str]:
-    lines = [
-        "",
-        "## Jira Tickets",
-        "",
-        f"- Total: **{jd.total_tickets}**  |  "
-        f"With components: {jd.tickets_with_components}  |  "
-        f"With implementer: {jd.tickets_with_implementer}  |  "
-        f"Blocked: {jd.tickets_blocked}  |  "
-        f"With PR linked: {jd.tickets_with_pr_linked}",
-    ]
+def _render_jira_section(jd: "JiraUserData", t: dict[str, str], language: str = "en") -> list[str]:
+    summary = (
+        f"- {t['total']}: **{jd.total_tickets}**  |  "
+        f"{t['with_components']}: {jd.tickets_with_components}  |  "
+        f"{t['with_implementer']}: {jd.tickets_with_implementer}  |  "
+        f"{t['blocked']}: {jd.tickets_blocked}  |  "
+        f"{t['with_pr_linked']}: {jd.tickets_with_pr_linked}"
+    )
+    if jd.epics_contributed:
+        summary += f"  |  {t['epics_contributed']}: {jd.epics_contributed}"
+    lines = ["", f"## {t['jira_tickets']}", "", summary]
 
     if not jd.tickets:
-        lines += ["", "_No tickets in this period._", ""]
+        lines += ["", t["no_tickets"], ""]
         return lines
 
     lines += [
         "",
-        "| Key | Summary | Status | State Journey | Blocked | PR Linked |",
+        f"| {t['col_key']} | {t['col_summary']} | {t['col_status']} | {t['col_journey']} | {t['col_blocked']} | {t['col_pr_linked']} |",
         "| --- | ------- | ------ | ------------- | ------- | --------- |",
     ]
-    for t in jd.tickets:
-        blocked_str = "Yes" if t.is_blocked else "No"
-        if t.pr_links:
-            pr_str = "Yes"
-        elif t.pr_linked_via_automation:
-            pr_str = "Automation"
+    for tk in jd.tickets:
+        blocked_str = t["yes"] if tk.is_blocked else t["no"]
+        if tk.pr_links:
+            pr_str = t["yes"]
+        elif tk.pr_linked_via_automation:
+            pr_str = t["automation"]
         else:
-            pr_str = "No"
-        journey = _fmt_state_journey(t.time_in_status)
+            pr_str = t["no"]
+        journey = _fmt_state_journey(tk.time_in_status)
         lines.append(
-            f"| {t.key} | {_truncate(t.summary)} | {t.status} | "
+            f"| {tk.key} | {_truncate(tk.summary)} | {tk.status} | "
             f"{journey} | {blocked_str} | {pr_str} |"
         )
 
     if jd.red_flags:
+        kind_labels = _KIND_LABELS.get((language or "en").lower(), _KIND_LABELS["en"])
         by_ticket: dict[str, list] = {}
         for rf in jd.red_flags:
             by_ticket.setdefault(rf.ticket_key, []).append(rf)
 
         lines += [
             "",
-            "### Red Flags",
+            f"### {t['red_flags']}",
             "",
-            "| Ticket | Flags | Detail |",
+            f"| {t['col_ticket']} | {t['col_flags']} | {t['col_detail']} |",
             "| ------ | ----- | ------ |",
         ]
         for key, flags in by_ticket.items():
-            kinds = ", ".join(_KIND_LABELS.get(rf.kind, rf.kind) for rf in flags)
+            kinds = ", ".join(kind_labels.get(rf.kind, rf.kind) for rf in flags)
             significant = [rf for rf in flags if rf.kind in _SIGNIFICANT_FLAG_KINDS]
             detail = " / ".join(rf.detail for rf in significant) if significant else "-"
             lines.append(f"| {key} | {kinds} | {detail} |")
@@ -278,29 +399,26 @@ def _render_jira_section(jd: "JiraUserData", multi_month: bool = False) -> list[
     if jd.total_created > 0:
         lines += [
             "",
-            "### Tickets Created",
+            f"### {t['tickets_created']}",
             "",
-            f"> **Total:** {jd.total_created} | "
-            f"With components: {jd.created_with_components} | "
-            f"With AC: {jd.created_with_ac}",
+            f"> **{t['total']}:** {jd.total_created} | "
+            f"{t['with_components']}: {jd.created_with_components} | "
+            f"{t['with_ac']}: {jd.created_with_ac}",
             "",
-            "| Key | Summary | Type | Components | AC | Description |",
+            f"| {t['col_key']} | {t['col_summary']} | {t['col_type']} | {t['col_components']} | {t['col_ac']} | {t['col_description']} |",
             "| --- | ------- | ---- | ---------- | -- | ----------- |",
         ]
-        for t in jd.created_tickets:
-            comp_str = ", ".join(t.components) if t.components else "-"
-            if not t.has_ac:
-                ac_str = "No"
-            elif t.ac_uses_full_phrase:
-                ac_str = "Yes"
+        for tk in jd.created_tickets:
+            comp_str = ", ".join(tk.components) if tk.components else "-"
+            if not tk.has_ac:
+                ac_str = t["no"]
+            elif tk.ac_uses_full_phrase:
+                ac_str = t["yes"]
             else:
-                ac_str = "Abbreviated"
-            desc_str = "Yes" if t.has_description else "No"
+                ac_str = t["abbreviated"]
+            desc_str = t["yes"] if tk.has_description else t["no"]
             lines.append(
-                f"| {t.key} | {_truncate(t.summary)} | {t.issue_type or '-'} | {comp_str} | {ac_str} | {desc_str} |"
+                f"| {tk.key} | {_truncate(tk.summary)} | {tk.issue_type or '-'} | {comp_str} | {ac_str} | {desc_str} |"
             )
-
-    if multi_month and jd.monthly_resolved:
-        lines += _monthly_resolution_chart(jd.monthly_resolved, jd.jira_display_name or "user")
 
     return lines
