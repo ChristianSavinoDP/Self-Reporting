@@ -118,13 +118,15 @@ def _fix_markdown(text: str) -> str:
 
 def _insert_analysis(report: str, analysis: str) -> str:
     """Insert the analysis before the credits footer so credits stay last."""
-    from src.renderer import CREDITS_ANCHOR, credits_block
+    from src.renderer import CREDITS_ANCHOR, credits_block, _normalize_blanks
 
     body = report.partition(CREDITS_ANCHOR)[0].rstrip()
     if body.endswith("---"):  # drop the separator that opens the credits block
         body = body[: -len("---")].rstrip()
     analysis_block = _fix_markdown(analysis).strip()
-    return body + "\n\n" + analysis_block + "\n\n" + credits_block() + "\n"
+    doc = body + "\n\n" + analysis_block + "\n\n" + credits_block()
+    # Collapse double blank lines at the seams and end on exactly one newline (MD012).
+    return _normalize_blanks(doc).rstrip() + "\n"
 
 
 def _extract_metrics_section(report: str) -> str:
@@ -465,7 +467,9 @@ def run(period: str, output: str = "output", language: str = "en") -> None:
         sys.exit(1)
 
     report_md = _insert_analysis(report_md, analysis)
-    report_path.write_text(report_md + "\n", encoding="utf-8")
+    # _insert_analysis already ends on exactly one newline; don't add another
+    # (that produced a trailing blank line, MD012).
+    report_path.write_text(report_md, encoding="utf-8")
     log(f"  @{login}: saved ({len(analysis)} chars)")
     log(f"\nDone: {report_path}")
 

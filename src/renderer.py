@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, TYPE_CHECKING
@@ -49,6 +50,9 @@ _STRINGS: dict[str, dict[str, str]] = {
         "human_prs": "Human PRs", "bot_prs": "Bot PRs",
         "prs_reviewed": "PRs reviewed",
         "approved": "Approved", "changes_requested": "Changes requested", "comments_only": "Comments only",
+        "threads_breakdown": "Review Threads Breakdown",
+        "pie_resolved": "Resolved", "pie_outdated": "Outdated", "pie_reacted": "Acknowledged",
+        "pie_replied": "Replied, not resolved", "pie_ignored": "Ignored", "pie_open": "Open / pending",
         "monthly_progress": "Monthly Progress: Tickets Resolved",
         "chart_title": "Tickets resolved per month",
         "chart_y": "Tickets",
@@ -93,6 +97,9 @@ _STRINGS: dict[str, dict[str, str]] = {
         "human_prs": "PRs de Humanos", "bot_prs": "PRs de Bots",
         "prs_reviewed": "PRs revisados",
         "approved": "Aprobados", "changes_requested": "Cambios solicitados", "comments_only": "Solo comentarios",
+        "threads_breakdown": "Desglose de Threads de Review",
+        "pie_resolved": "Resueltos", "pie_outdated": "Obsoletos", "pie_reacted": "Reconocidos",
+        "pie_replied": "Respondidos, sin resolver", "pie_ignored": "Ignorados", "pie_open": "Abiertos / pendientes",
         "monthly_progress": "Progreso Mensual: Tickets Resueltos",
         "chart_title": "Tickets resueltos por mes",
         "chart_y": "Tickets",
@@ -145,7 +152,16 @@ def _pct(v: float) -> str:
 
 
 def _truncate(s: str, n: int = 50) -> str:
+    # Strip first: a trailing space inside a table cell trips markdownlint's
+    # table-pipe-alignment rule (MD060) and reads as a stray gap in the HTML.
+    s = s.strip()
     return s[:n] + "..." if len(s) > n else s
+
+
+def _normalize_blanks(md: str) -> str:
+    """Collapse runs of blank lines to a single one (MD012). Sections that each
+    pad with a leading and trailing blank line would otherwise stack doubles."""
+    return re.sub(r"\n{3,}", "\n\n", md)
 
 
 _MONTH_ABBR = {
@@ -181,6 +197,37 @@ def _monthly_resolution_chart(monthly: dict[str, int], login: str, t: dict[str, 
         f"    x-axis [{labels}]",
         f'    y-axis "{t["chart_y"]}" 0 --> {max_val + 1}',
         f"    bar [{values}]",
+        "```",
+        "",
+    ]
+
+
+def _threads_pie(r, t: dict[str, str]) -> list[str]:
+    """Mermaid pie of how received review threads were handled.
+
+    Only the non-zero slices are emitted. Skipped entirely when no threads were
+    received, so an empty period does not render a blank circle.
+    """
+    if r.threads_received <= 0:
+        return []
+    slices = [
+        (t["pie_resolved"], r.resolved),
+        (t["pie_outdated"], r.outdated),
+        (t["pie_reacted"], r.reacted_only),
+        (t["pie_replied"], r.replied_not_resolved),
+        (t["pie_ignored"], r.ignored),
+        (t["pie_open"], r.open_pr_unresolved),
+    ]
+    rows = [f'    "{label}" : {value}' for label, value in slices if value > 0]
+    if not rows:
+        return []
+    return [
+        "",
+        f"### {t['threads_breakdown']}",
+        "",
+        "```mermaid",
+        "pie showData",
+        *rows,
         "```",
         "",
     ]
@@ -256,6 +303,8 @@ def _markdown(
     if r.open_pr_unresolved:
         lines.append(f"- {t['pending_open']}: {r.open_pr_unresolved} ({t['not_counted']})")
 
+    lines += _threads_pie(r, t)
+
     lines += [
         "",
         f"## {t['reviews_given']}",
@@ -284,7 +333,8 @@ def _markdown(
             )
         lines += _render_jira_section(jira_data, t, language)
 
-    return "\n".join(lines).rstrip() + "\n\n" + credits_block() + "\n"
+    body = _normalize_blanks("\n".join(lines).rstrip())
+    return _normalize_blanks(body + "\n\n" + credits_block()).rstrip() + "\n"
 
 
 # Unique opening of the credits footer. The analysis step anchors on this to

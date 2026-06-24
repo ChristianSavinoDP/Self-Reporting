@@ -14,13 +14,19 @@ Markdown so `make html-*` keeps working from the `.md` alone.
 """
 from __future__ import annotations
 
+import base64
 import html
 import json
+import mimetypes
 import re
 from pathlib import Path
 
 from .renderer import CREDITS_ANCHOR
 from .utils import log
+
+# Easter egg: drop any image in src/icon/ and it becomes the page favicon,
+# embedded as a data URI so the HTML stays standalone. Absent -> no favicon.
+_ICON_DIR = Path(__file__).resolve().parent / "icon"
 
 # ---------------------------------------------------------------------------
 # Inline formatting
@@ -535,16 +541,24 @@ def _build_numbers(data: dict | None, period: str, u: dict[str, str]) -> str:
 # Tabs assembly
 # ---------------------------------------------------------------------------
 
-# Title fragments (any language) that mark an AI-analysis section as belonging
-# to the Jira tab rather than the GitHub/Code tab. Matched case-insensitively as
-# substrings. Only consulted for analysis sections; the chart and other level-2
-# metrics sections route to the Metrics tab before this is checked.
-_JIRA_TITLE_HINTS = ("jira", "ticket")
+# Title fragments (any language) that mark an AI-analysis section as Jira's
+# ("Jira Activity" / "Actividad en Jira"). Matched case-insensitively.
+_JIRA_ANALYSIS_HINTS = ("jira", "ticket")
+# For raw metrics sections we match ONLY "jira", so the ticket tables ("Jira
+# Tickets" / "Tickets de Jira") move to the Jira tab while the monthly chart
+# ("Monthly Progress: Tickets Resolved", which contains "tickets" but not
+# "jira") correctly stays in the Metrics tab.
+_JIRA_METRICS_HINTS = ("jira",)
 
 
-def _is_jira_section(title: str) -> bool:
+def _is_jira_analysis(title: str) -> bool:
     low = title.strip().lower()
-    return any(h in low for h in _JIRA_TITLE_HINTS)
+    return any(h in low for h in _JIRA_ANALYSIS_HINTS)
+
+
+def _is_jira_metrics(title: str) -> bool:
+    low = title.strip().lower()
+    return any(h in low for h in _JIRA_METRICS_HINTS)
 
 
 def _build_body(body_md: str, data: dict | None) -> str:
@@ -568,19 +582,22 @@ def _build_body(body_md: str, data: dict | None) -> str:
                 sec["md"] = _strip_trailing_hr(remaining)
                 break
 
-    # Route: synthesis to Summary; AI analysis split Code/Jira by title; all raw
-    # metrics tables (level-2 sections, incl. the chart) to the Metrics tab.
+    # Route by title and kind. Jira-titled sections (analysis OR raw ticket
+    # tables) go to the Jira tab; other raw metrics (PR stats, reviews, the
+    # monthly chart) stay in Metrics; GitHub analysis goes to Code; synthesis to
+    # Summary. The Jira tab thus shows the Jira analysis then the ticket tables.
     summary_md: str | None = None
     code_analysis: list[dict] = []
     jira_analysis: list[dict] = []
+    jira_metrics: list[dict] = []
     metrics_secs: list[dict] = []
     for sec in sections:
         title = sec["title"]
         if sec["kind"] == "metrics":
-            metrics_secs.append(sec)
+            (jira_metrics if _is_jira_metrics(title) else metrics_secs).append(sec)
         elif title.strip().lower() in _SUMMARY_TITLES:
             summary_md = sec["md"]
-        elif _is_jira_section(title):
+        elif _is_jira_analysis(title):
             jira_analysis.append(sec)
         else:
             code_analysis.append(sec)
@@ -603,7 +620,7 @@ def _build_body(body_md: str, data: dict | None) -> str:
     overview_html = "\n".join(p for p in overview_parts if p)
 
     code_html = _join(code_analysis)
-    jira_html = _join(jira_analysis)
+    jira_html = _join(jira_analysis + jira_metrics)
     metrics_html = _join(metrics_secs)
 
     tabs = [("overview", u["tab_summary"], overview_html)]
@@ -799,6 +816,7 @@ _TEMPLATE = """<!DOCTYPE html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{title}</title>
+{favicon}
 <style>{css}</style>
 </head>
 <body>
@@ -820,6 +838,25 @@ def _extract_title(md: str) -> str:
     return "Self-Report"
 
 
+def _favicon_tag() -> str:
+    """Return a <link rel='icon'> with the first image in src/icon/ embedded as
+    a data URI, or '' if the folder is empty/absent. Keeps the page standalone."""
+    if not _ICON_DIR.is_dir():
+        return ""
+    icons = sorted(p for p in _ICON_DIR.iterdir() if p.suffix.lower() in
+                   {".png", ".jpg", ".jpeg", ".ico", ".gif", ".svg", ".webp"})
+    if not icons:
+        return ""
+    icon = icons[0]
+    mime = mimetypes.guess_type(icon.name)[0] or "image/png"
+    try:
+        b64 = base64.b64encode(icon.read_bytes()).decode("ascii")
+    except OSError as e:
+        log(f"  HTML: could not read favicon {icon}: {e}")
+        return ""
+    return f'<link rel="icon" type="{mime}" href="data:{mime};base64,{b64}">'
+
+
 def render_html(md: str, data: dict | None = None) -> str:
     """Convert a Markdown report to a full standalone HTML document.
 
@@ -831,7 +868,8 @@ def render_html(md: str, data: dict | None = None) -> str:
     body = _build_body(body_md, data)
     credits = f'<footer class="credits">{credits_html}</footer>' if credits_html else ""
     return _TEMPLATE.format(
-        title=html.escape(title), css=_CSS, body=body, credits=credits, scripts=_SCRIPTS
+        title=html.escape(title), favicon=_favicon_tag(),
+        css=_CSS, body=body, credits=credits, scripts=_SCRIPTS
     )
 
 
